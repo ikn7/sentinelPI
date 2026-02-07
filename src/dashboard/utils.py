@@ -1,0 +1,149 @@
+"""
+Utility functions for the SentinelPi dashboard.
+
+Provides shared helpers used across dashboard components.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from typing import Any, Coroutine, TypeVar
+
+T = TypeVar("T")
+
+
+def run_async(coro: Coroutine[Any, Any, T]) -> T:
+    """
+    Run an async coroutine from a synchronous context.
+
+    This is the centralized async runner for all dashboard components.
+    It handles event loop creation and management for Streamlit's
+    synchronous execution model.
+
+    When the current event loop is already running (as in Streamlit),
+    the coroutine is executed in a separate thread to avoid conflicts.
+
+    Args:
+        coro: The coroutine to execute.
+
+    Returns:
+        The result of the coroutine.
+
+    Example:
+        >>> async def fetch_data():
+        ...     return await some_async_operation()
+        >>> result = run_async(fetch_data())
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Event loop already running (Streamlit) - use a separate thread
+        return _run_in_thread(coro)
+
+    # No running loop - create one and run directly
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
+def _run_in_thread(coro: Coroutine[Any, Any, T]) -> T:
+    """Run a coroutine in a new thread with its own event loop."""
+    result = None
+    exception = None
+
+    def _target():
+        nonlocal result, exception
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            result = new_loop.run_until_complete(coro)
+        except Exception as e:
+            exception = e
+        finally:
+            new_loop.close()
+
+    thread = threading.Thread(target=_target)
+    thread.start()
+    thread.join(timeout=300)  # 5 min max
+
+    if exception:
+        raise exception
+    return result
+
+
+def format_number(value: int | float, precision: int = 0) -> str:
+    """
+    Format a number with thousands separator.
+
+    Args:
+        value: The number to format.
+        precision: Decimal precision (default: 0).
+
+    Returns:
+        Formatted string with spaces as thousands separator.
+
+    Example:
+        >>> format_number(1234567)
+        '1 234 567'
+        >>> format_number(1234.567, 2)
+        '1 234.57'
+    """
+    if precision > 0:
+        return f"{value:,.{precision}f}".replace(",", " ")
+    return f"{int(value):,}".replace(",", " ")
+
+
+def truncate_text(text: str, max_length: int = 100, suffix: str = "...") -> str:
+    """
+    Truncate text to a maximum length.
+
+    Args:
+        text: The text to truncate.
+        max_length: Maximum length before truncation.
+        suffix: Suffix to append when truncated.
+
+    Returns:
+        Truncated text with suffix if needed.
+    """
+    if not text or len(text) <= max_length:
+        return text or ""
+    return text[: max_length - len(suffix)] + suffix
+
+
+def safe_get(obj: Any, *keys: str, default: Any = None) -> Any:
+    """
+    Safely get a nested value from a dict or object.
+
+    Args:
+        obj: The object to get value from.
+        *keys: The keys to traverse.
+        default: Default value if not found.
+
+    Returns:
+        The value at the nested path or default.
+
+    Example:
+        >>> safe_get({"a": {"b": 1}}, "a", "b")
+        1
+        >>> safe_get({"a": 1}, "b", "c", default=0)
+        0
+    """
+    result = obj
+    for key in keys:
+        try:
+            if isinstance(result, dict):
+                result = result.get(key, default)
+            else:
+                result = getattr(result, key, default)
+            if result is None:
+                return default
+        except (KeyError, AttributeError, TypeError):
+            return default
+    return result

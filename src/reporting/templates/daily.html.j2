@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SentinelPi - Rapport Quotidien</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header .subtitle {
+            opacity: 0.9;
+            font-size: 16px;
+        }
+
+        .header .date {
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: 500;
+        }
+
+        .section {
+            padding: 25px 30px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .section:last-child {
+            border-bottom: none;
+        }
+
+        .section h2 {
+            font-size: 20px;
+            margin-bottom: 20px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 20px;
+        }
+
+        .metric {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .metric .value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .metric .label {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .item-list {
+            list-style: none;
+        }
+
+        .item-list li {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .item-list li:last-child {
+            border-bottom: none;
+        }
+
+        .item-list .item-title {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .item-list .item-title a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .item-list .item-title a:hover {
+            text-decoration: underline;
+        }
+
+        .item-list .item-meta {
+            font-size: 13px;
+            color: #888;
+            margin-top: 3px;
+        }
+
+        .item-list .item-score {
+            background: #667eea;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .bar-chart {
+            margin-top: 10px;
+        }
+
+        .bar-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .bar-label {
+            width: 150px;
+            font-size: 14px;
+            color: #555;
+            flex-shrink: 0;
+        }
+
+        .bar-container {
+            flex-grow: 1;
+            background: #eee;
+            border-radius: 4px;
+            height: 24px;
+            margin: 0 10px;
+            overflow: hidden;
+        }
+
+        .bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .bar-value {
+            width: 50px;
+            text-align: right;
+            font-size: 14px;
+            font-weight: 500;
+            color: #333;
+        }
+
+        .alert-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-right: 8px;
+        }
+
+        .alert-critical { background: #dc3545; color: white; }
+        .alert-warning { background: #ffc107; color: #333; }
+        .alert-notice { background: #17a2b8; color: white; }
+        .alert-info { background: #6c757d; color: white; }
+
+        .source-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-ok { color: #28a745; }
+        .status-error { color: #dc3545; }
+
+        .footer {
+            background: #f8f9fa;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 13px;
+            color: #888;
+        }
+
+        @media print {
+            body {
+                padding: 0;
+                background: white;
+            }
+            .container {
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🛡️ SentinelPi</h1>
+            <div class="subtitle">Rapport Quotidien de Veille</div>
+            <div class="date">{{ period_label }}</div>
+        </div>
+
+        <div class="section">
+            <h2>📊 Vue d'ensemble</h2>
+            <div class="metrics">
+                <div class="metric">
+                    <div class="value">{{ total_items | format_number }}</div>
+                    <div class="label">Items collectés</div>
+                </div>
+                <div class="metric">
+                    <div class="value">{{ new_items | format_number }}</div>
+                    <div class="label">Nouveaux items</div>
+                </div>
+                <div class="metric">
+                    <div class="value">{{ total_alerts }}</div>
+                    <div class="label">Alertes</div>
+                </div>
+                <div class="metric">
+                    <div class="value">{{ sources_status | length }}</div>
+                    <div class="label">Sources actives</div>
+                </div>
+            </div>
+        </div>
+
+        {% if alerts_by_severity %}
+        <div class="section">
+            <h2>🔔 Alertes par sévérité</h2>
+            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                {% if alerts_by_severity.critical > 0 %}
+                <span class="alert-badge alert-critical">🚨 Critique: {{ alerts_by_severity.critical }}</span>
+                {% endif %}
+                {% if alerts_by_severity.warning > 0 %}
+                <span class="alert-badge alert-warning">⚠️ Attention: {{ alerts_by_severity.warning }}</span>
+                {% endif %}
+                {% if alerts_by_severity.notice > 0 %}
+                <span class="alert-badge alert-notice">📢 Notice: {{ alerts_by_severity.notice }}</span>
+                {% endif %}
+                {% if alerts_by_severity.info > 0 %}
+                <span class="alert-badge alert-info">ℹ️ Info: {{ alerts_by_severity.info }}</span>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if highlighted_items %}
+        <div class="section">
+            <h2>⭐ Items mis en avant</h2>
+            <ul class="item-list">
+                {% for item in highlighted_items %}
+                <li>
+                    <div>
+                        <div class="item-title">
+                            {% if item.url %}
+                            <a href="{{ item.url }}" target="_blank">{{ item.title }}</a>
+                            {% else %}
+                            {{ item.title }}
+                            {% endif %}
+                        </div>
+                        <div class="item-meta">📰 {{ item.source }}</div>
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        {% if top_items %}
+        <div class="section">
+            <h2>🏆 Top 10 par pertinence</h2>
+            <ul class="item-list">
+                {% for item in top_items %}
+                <li>
+                    <div>
+                        <div class="item-title">
+                            {% if item.url %}
+                            <a href="{{ item.url }}" target="_blank">{{ item.title }}</a>
+                            {% else %}
+                            {{ item.title }}
+                            {% endif %}
+                        </div>
+                        <div class="item-meta">📰 {{ item.source }}{% if item.published_at %} · {{ item.published_at | format_date }}{% endif %}</div>
+                    </div>
+                    <span class="item-score">{{ "%.0f" | format(item.score) }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        {% if items_by_source %}
+        <div class="section">
+            <h2>📡 Répartition par source</h2>
+            <div class="bar-chart">
+                {% set max_count = items_by_source[0].count if items_by_source else 1 %}
+                {% for item in items_by_source %}
+                <div class="bar-item">
+                    <div class="bar-label">{{ item.source[:20] }}{% if item.source|length > 20 %}...{% endif %}</div>
+                    <div class="bar-container">
+                        <div class="bar-fill" style="width: {{ (item.count / max_count * 100) | int }}%"></div>
+                    </div>
+                    <div class="bar-value">{{ item.count }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if items_by_category %}
+        <div class="section">
+            <h2>🏷️ Répartition par catégorie</h2>
+            <div class="bar-chart">
+                {% set max_count = items_by_category[0].count if items_by_category else 1 %}
+                {% for item in items_by_category %}
+                <div class="bar-item">
+                    <div class="bar-label">{{ item.category }}</div>
+                    <div class="bar-container">
+                        <div class="bar-fill" style="width: {{ (item.count / max_count * 100) | int }}%"></div>
+                    </div>
+                    <div class="bar-value">{{ item.count }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Rapport généré le {{ generated_at | format_date('%d/%m/%Y à %H:%M') }}</p>
+            <p>SentinelPi - Station de veille automatisée</p>
+        </div>
+    </div>
+</body>
+</html>

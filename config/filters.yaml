@@ -1,0 +1,281 @@
+# SentinelPi - Configuration des filtres
+# ==================================================
+#
+# Actions disponibles :
+#   - include   : Inclure l'item si match (par défaut tout est inclus)
+#   - exclude   : Exclure l'item si match
+#   - highlight : Marquer comme important
+#   - tag       : Ajouter un tag
+#   - alert     : Déclencher une alerte
+#
+# Types de conditions :
+#   - keywords  : Liste de mots-clés
+#   - regex     : Expression régulière
+#   - compound  : Combinaison de conditions (AND/OR)
+#
+# Champs ciblables :
+#   - title   : Titre uniquement
+#   - content : Contenu uniquement
+#   - author  : Auteur uniquement
+#   - all     : Tous les champs texte
+
+filters:
+  # ==================================================
+  # FILTRES D'ALERTE - Priorité haute
+  # ==================================================
+
+  - name: "Alertes critiques"
+    description: "Événements nécessitant une attention immédiate"
+    action: alert
+    action_params:
+      severity: critical
+    score_modifier: 100
+    priority: 1
+    enabled: true
+    conditions:
+      type: keywords
+      field: all
+      operator: contains
+      case_sensitive: false
+      value:
+        - "faillite"
+        - "liquidation"
+        - "data breach"
+        - "fuite de données"
+        - "cyberattaque"
+        - "ransomware"
+        - "hack massif"
+        - "rappel produit"
+        - "scandale"
+
+  - name: "Mots-clés stratégiques"
+    description: "Termes stratégiques à surveiller"
+    action: alert
+    action_params:
+      severity: notice
+    score_modifier: 50
+    priority: 10
+    enabled: true
+    conditions:
+      type: keywords
+      field: all
+      operator: contains
+      case_sensitive: false
+      value:
+        - "intelligence artificielle"
+        - "machine learning"
+        - "deep learning"
+        - "LLM"
+        - "GPT"
+        - "levée de fonds"
+        - "série A"
+        - "série B"
+        - "acquisition"
+        - "fusion"
+        - "partenariat stratégique"
+        - "IPO"
+        - "introduction en bourse"
+
+  # ==================================================
+  # EXEMPLES - Veille concurrentielle
+  # ==================================================
+
+  # Décommenter et adapter selon vos besoins
+  #
+  # - name: "Mentions concurrents"
+  #   description: "Détection des mentions de nos concurrents"
+  #   action: alert
+  #   action_params:
+  #     severity: notice
+  #   score_modifier: 30
+  #   priority: 5
+  #   conditions:
+  #     type: keywords
+  #     field: all
+  #     operator: contains
+  #     case_sensitive: false
+  #     value:
+  #       - "Concurrent A"
+  #       - "Concurrent B"
+  #       - "ConcurrentA"
+  #       - "@concurrent_a"
+
+  # ==================================================
+  # FILTRES DE MISE EN AVANT
+  # ==================================================
+
+  - name: "Contenus tech importants"
+    description: "Mettre en avant les articles tech majeurs"
+    action: highlight
+    score_modifier: 30
+    priority: 20
+    enabled: true
+    conditions:
+      type: compound
+      logic: or
+      conditions:
+        - type: keywords
+          field: title
+          operator: contains
+          value:
+            - "breakthrough"
+            - "révolution"
+            - "disruption"
+            - "game changer"
+        - type: regex
+          field: title
+          operator: matches
+          value: "(?i)(première|first|nouveau|new)\\s+(mondial|world|record)"
+
+  # ==================================================
+  # FILTRES DE TAGGING
+  # ==================================================
+
+  - name: "Tag réglementation"
+    description: "Identifier les contenus réglementaires"
+    action: tag
+    action_params:
+      tag: "réglementation"
+    priority: 50
+    enabled: true
+    conditions:
+      type: keywords
+      field: all
+      operator: contains
+      case_sensitive: false
+      value:
+        - "RGPD"
+        - "GDPR"
+        - "CNIL"
+        - "directive européenne"
+        - "règlement européen"
+        - "mise en conformité"
+        - "AI Act"
+        - "Digital Services Act"
+        - "DMA"
+
+  - name: "Tag financement"
+    description: "Identifier les actualités financement"
+    action: tag
+    action_params:
+      tag: "financement"
+    priority: 50
+    enabled: true
+    conditions:
+      type: keywords
+      field: all
+      operator: contains
+      case_sensitive: false
+      value:
+        - "levée de fonds"
+        - "fundraising"
+        - "série A"
+        - "série B"
+        - "série C"
+        - "seed"
+        - "amorçage"
+        - "investissement"
+        - "million"
+        - "milliard"
+        - "€M"
+        - "$M"
+
+  - name: "Tag sécurité"
+    description: "Identifier les articles cybersécurité"
+    action: tag
+    action_params:
+      tag: "sécurité"
+    priority: 50
+    enabled: true
+    conditions:
+      type: keywords
+      field: all
+      operator: contains
+      case_sensitive: false
+      value:
+        - "cybersécurité"
+        - "ransomware"
+        - "malware"
+        - "vulnérabilité"
+        - "CVE"
+        - "zero-day"
+        - "phishing"
+        - "ANSSI"
+
+  # ==================================================
+  # FILTRES D'EXCLUSION - Bruit
+  # ==================================================
+
+  - name: "Exclusion publicités"
+    description: "Filtrer le contenu sponsorisé"
+    action: exclude
+    priority: 1
+    enabled: true
+    conditions:
+      type: compound
+      logic: or
+      conditions:
+        - type: keywords
+          field: title
+          operator: contains
+          case_sensitive: false
+          value:
+            - "[sponsored]"
+            - "[ad]"
+            - "[pub]"
+            - "publicité"
+            - "partenaire"
+        - type: regex
+          field: title
+          operator: matches
+          value: "^\\s*\\[?(Sponsored|Pub|Ad|Publicité)\\]?"
+
+  - name: "Exclusion newsletters"
+    description: "Filtrer les annonces de newsletters"
+    action: exclude
+    priority: 2
+    enabled: true
+    conditions:
+      type: keywords
+      field: title
+      operator: contains
+      case_sensitive: false
+      value:
+        - "subscribe to our newsletter"
+        - "inscrivez-vous à notre newsletter"
+        - "sign up for"
+        - "weekly digest"
+
+  # ==================================================
+  # FILTRES AVANCÉS - Exemples
+  # ==================================================
+
+  # Exemple : Filtre avec condition composée complexe
+  # - name: "Articles IA + France"
+  #   description: "Articles sur l'IA mentionnant la France"
+  #   action: highlight
+  #   score_modifier: 40
+  #   conditions:
+  #     type: compound
+  #     logic: and
+  #     conditions:
+  #       - type: keywords
+  #         field: all
+  #         operator: contains
+  #         value: ["intelligence artificielle", "IA", "AI", "machine learning"]
+  #       - type: keywords
+  #         field: all
+  #         operator: contains
+  #         value: ["France", "français", "french", "Paris"]
+
+  # Exemple : Filtre regex avancé
+  # - name: "Détection montants"
+  #   description: "Détecter les montants financiers significatifs"
+  #   action: tag
+  #   action_params:
+  #     tag: "montant-significatif"
+  #   conditions:
+  #     type: regex
+  #     field: all
+  #     operator: matches
+  #     value: "\\b\\d+(?:[,.]\\d+)?\\s*(?:millions?|milliards?|M€|M\\$|B€|B\\$)\\b"

@@ -1,0 +1,168 @@
+# SentinelPi - Configuration des alertes
+# ==================================================
+#
+# Niveaux de sévérité :
+#   - info     : Information générale
+#   - notice   : À noter
+#   - warning  : Attention requise
+#   - critical : Action immédiate requise
+#
+# Canaux disponibles :
+#   - telegram : Notifications via bot Telegram
+#   - email    : Notifications par email
+#   - webhook  : Appels HTTP vers une URL externe
+#   - desktop  : Notifications bureau (si disponible)
+
+alerting:
+  enabled: true
+
+  # ==================================================
+  # AGRÉGATION (anti-spam)
+  # ==================================================
+  aggregation:
+    enabled: true
+    # Fenêtre d'agrégation en minutes
+    window_minutes: 15
+    # Maximum d'alertes par fenêtre avant agrégation
+    max_alerts_per_window: 10
+    # Envoyer un résumé si trop d'alertes
+    send_summary: true
+
+  # ==================================================
+  # HEURES SILENCIEUSES (optionnel)
+  # ==================================================
+  quiet_hours:
+    enabled: false
+    # Ne pas envoyer d'alertes entre ces heures (sauf critical)
+    start: "22:00"
+    end: "07:00"
+    # Les alertes critical ignorent les heures silencieuses
+    bypass_for_critical: true
+
+  # ==================================================
+  # CANAUX DE NOTIFICATION
+  # ==================================================
+  channels:
+    # --------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------
+    telegram:
+      enabled: true
+      # Token du bot (créé via @BotFather)
+      bot_token: "${TELEGRAM_BOT_TOKEN}"
+      # ID du chat où envoyer (user ID ou group ID)
+      chat_id: "${TELEGRAM_CHAT_ID}"
+      # Sévérité minimum pour ce canal
+      min_severity: notice
+      # Désactiver les aperçus de liens
+      disable_web_preview: false
+      # Mode silencieux (pas de notification sonore)
+      silent: false
+      # Template du message (Markdown)
+      format: |
+        🔔 *{severity_emoji} {severity}*
+
+        📰 *{title}*
+
+        📌 Source: {source_name}
+        🕐 {published_at}
+
+        {summary}
+
+        🔗 [Lire l'article]({url})
+
+    # --------------------------------------------------
+    # EMAIL
+    # --------------------------------------------------
+    email:
+      enabled: false
+      # Configuration SMTP
+      smtp_host: "smtp.gmail.com"
+      smtp_port: 587
+      use_tls: true
+      # Authentification
+      username: "${EMAIL_USER}"
+      password: "${EMAIL_PASSWORD}"
+      # Adresses
+      from_address: "sentinelpi@example.com"
+      from_name: "SentinelPi"
+      to_addresses:
+        - "analyst@example.com"
+      # Sévérité minimum pour ce canal
+      min_severity: warning
+      # Template du sujet
+      subject_template: "[SentinelPi] {severity_emoji} {severity}: {title}"
+      # Inclure le contenu complet
+      include_full_content: true
+
+    # --------------------------------------------------
+    # WEBHOOK
+    # --------------------------------------------------
+    webhook:
+      enabled: false
+      # URL de destination
+      url: "${WEBHOOK_URL}"
+      # Méthode HTTP
+      method: POST
+      # Headers personnalisés
+      headers:
+        Content-Type: "application/json"
+        Authorization: "Bearer ${WEBHOOK_TOKEN}"
+      # Sévérité minimum
+      min_severity: notice
+      # Timeout en secondes
+      timeout: 30
+      # Retry en cas d'échec
+      max_retries: 3
+      # Payload JSON (variables disponibles : item, alert, source)
+      # payload_template: |
+      #   {
+      #     "text": "{title}",
+      #     "severity": "{severity}",
+      #     "url": "{url}",
+      #     "source": "{source_name}"
+      #   }
+
+    # --------------------------------------------------
+    # DESKTOP (notifications système)
+    # --------------------------------------------------
+    desktop:
+      enabled: false
+      min_severity: warning
+      # Durée d'affichage en secondes
+      timeout: 10
+
+  # ==================================================
+  # RÈGLES DE ROUTAGE
+  # ==================================================
+  # Permet de personnaliser les canaux par catégorie ou tags
+
+  rules:
+    # Alertes concurrents -> Telegram uniquement
+    - category: "concurrents"
+      min_severity: info
+      channels: [telegram]
+
+    # Alertes presse importantes -> Telegram + Email
+    - category: "presse"
+      min_severity: warning
+      channels: [telegram, email]
+
+    # Alertes avec tag "critique" -> Tous les canaux
+    - tags: ["critique", "urgent"]
+      min_severity: info
+      channels: [telegram, email, webhook]
+
+    # Alertes tech -> Seulement Telegram
+    - category: "tech"
+      min_severity: notice
+      channels: [telegram]
+
+  # ==================================================
+  # EMOJIS PAR SÉVÉRITÉ
+  # ==================================================
+  severity_emojis:
+    info: "ℹ️"
+    notice: "📢"
+    warning: "⚠️"
+    critical: "🚨"

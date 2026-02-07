@@ -1,0 +1,374 @@
+"""
+Configuration management for SentinelPi.
+
+Loads and validates configuration from YAML files and environment variables.
+Uses Pydantic for validation and type safety.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# ==================================================
+# Base paths
+# ==================================================
+
+def get_project_root() -> Path:
+    """Get the project root directory."""
+    # Assumes this file is at src/utils/config.py
+    return Path(__file__).parent.parent.parent
+
+
+PROJECT_ROOT = get_project_root()
+CONFIG_DIR = PROJECT_ROOT / "config"
+DATA_DIR = PROJECT_ROOT / "data"
+LOGS_DIR = PROJECT_ROOT / "logs"
+
+
+# ==================================================
+# Configuration Models
+# ==================================================
+
+class AppConfig(BaseModel):
+    """Application metadata configuration."""
+    name: str = "SentinelPi"
+    version: str = "1.0.0"
+    timezone: str = "Europe/Paris"
+
+
+class DatabaseConfig(BaseModel):
+    """Database configuration."""
+    path: str = "data/sentinelpi.db"
+    echo: bool = False
+
+    @property
+    def url(self) -> str:
+        """Get the SQLAlchemy database URL."""
+        abs_path = PROJECT_ROOT / self.path
+        return f"sqlite+aiosqlite:///{abs_path}"
+
+    @property
+    def sync_url(self) -> str:
+        """Get the synchronous SQLAlchemy database URL."""
+        abs_path = PROJECT_ROOT / self.path
+        return f"sqlite:///{abs_path}"
+
+
+class CacheConfig(BaseModel):
+    """HTTP cache configuration."""
+    enabled: bool = True
+    directory: str = "data/cache"
+    ttl_seconds: int = 300
+
+    @property
+    def path(self) -> Path:
+        """Get the absolute cache directory path."""
+        return PROJECT_ROOT / self.directory
+
+
+class HttpConfig(BaseModel):
+    """HTTP client configuration."""
+    timeout: int = 30
+    max_retries: int = 3
+    retry_delay: int = 5
+    rate_limit: float = 2.0
+    cache: CacheConfig = Field(default_factory=CacheConfig)
+
+    # JA3 fingerprint impersonation (curl_cffi)
+    # Options: disabled, chrome, firefox, safari, edge
+    impersonate: str = "disabled"
+    impersonate_version: str = "chrome120"  # e.g., chrome120, firefox120, safari17_0
+
+    # Browser-like headers to avoid WAF blocks
+    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    accept: str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    accept_language: str = "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"
+    accept_encoding: str = "gzip, deflate, br"
+    cache_control: str = "no-cache"
+    sec_ch_ua: str = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'
+    sec_ch_ua_mobile: str = "?0"
+    sec_ch_ua_platform: str = '"Windows"'
+    sec_fetch_dest: str = "document"
+    sec_fetch_mode: str = "navigate"
+    sec_fetch_site: str = "none"
+    sec_fetch_user: str = "?1"
+    upgrade_insecure_requests: str = "1"
+    dnt: str = "1"
+
+    # Custom headers (JSON dict as string for additional headers)
+    custom_headers: dict[str, str] = Field(default_factory=dict)
+
+    def get_headers(self) -> dict[str, str]:
+        """Get all headers as a dictionary."""
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": self.accept,
+            "Accept-Language": self.accept_language,
+            "Accept-Encoding": self.accept_encoding,
+            "Cache-Control": self.cache_control,
+            "Sec-Ch-Ua": self.sec_ch_ua,
+            "Sec-Ch-Ua-Mobile": self.sec_ch_ua_mobile,
+            "Sec-Ch-Ua-Platform": self.sec_ch_ua_platform,
+            "Sec-Fetch-Dest": self.sec_fetch_dest,
+            "Sec-Fetch-Mode": self.sec_fetch_mode,
+            "Sec-Fetch-Site": self.sec_fetch_site,
+            "Sec-Fetch-User": self.sec_fetch_user,
+            "Upgrade-Insecure-Requests": self.upgrade_insecure_requests,
+            "DNT": self.dnt,
+        }
+        # Add custom headers (can override defaults)
+        headers.update(self.custom_headers)
+        return headers
+
+
+class CollectionConfig(BaseModel):
+    """Collection settings."""
+    default_interval_minutes: int = 60
+    max_concurrent_collectors: int = 3
+    max_items_per_source: int = 100
+    dedup_window_days: int = 30
+    collector_timeout: int = 120
+
+
+class ProcessingConfig(BaseModel):
+    """Processing settings."""
+    extract_keywords: bool = True
+    max_keywords: int = 10
+    detect_language: bool = True
+    analyze_sentiment: bool = False
+    summarize: bool = False
+    summarize_max_length: int = 200
+
+
+class SchedulerConfig(BaseModel):
+    """Scheduler settings."""
+    enabled: bool = True
+    check_interval_seconds: int = 60
+    daily_report_time: str = "08:00"
+    weekly_report_day: int = 0
+    weekly_report_time: str = "09:00"
+
+
+class DashboardConfig(BaseModel):
+    """Dashboard settings."""
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8501
+    items_per_page: int = 50
+    auto_refresh_seconds: int = 60
+
+
+class LoggingConfig(BaseModel):
+    """Logging configuration."""
+    level: str = "INFO"
+    file: str = "logs/sentinelpi.log"
+    rotation: str = "10 MB"
+    retention: str = "30 days"
+    format: str = "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {name}:{function}:{line} | {message}"
+    colorize: bool = True
+
+    @property
+    def file_path(self) -> Path:
+        """Get the absolute log file path."""
+        return PROJECT_ROOT / self.file
+
+    @field_validator("level")
+    @classmethod
+    def validate_level(cls, v: str) -> str:
+        """Validate log level."""
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper_v = v.upper()
+        if upper_v not in valid_levels:
+            raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
+        return upper_v
+
+
+class MaintenanceConfig(BaseModel):
+    """Maintenance settings."""
+    cleanup_enabled: bool = True
+    retention_days: int = 90
+    cleanup_time: str = "03:00"
+    vacuum_enabled: bool = True
+
+
+class Settings(BaseSettings):
+    """Main application settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    app: AppConfig = Field(default_factory=AppConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    http: HttpConfig = Field(default_factory=HttpConfig)
+    collection: CollectionConfig = Field(default_factory=CollectionConfig)
+    processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
+
+    # Environment variables for secrets
+    telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str | None = Field(default=None, alias="TELEGRAM_CHAT_ID")
+    email_user: str | None = Field(default=None, alias="EMAIL_USER")
+    email_password: str | None = Field(default=None, alias="EMAIL_PASSWORD")
+    webhook_url: str | None = Field(default=None, alias="WEBHOOK_URL")
+    webhook_token: str | None = Field(default=None, alias="WEBHOOK_TOKEN")
+
+
+# ==================================================
+# Configuration Loading
+# ==================================================
+
+def load_yaml_file(path: Path) -> dict[str, Any]:
+    """Load a YAML file and return its contents."""
+    if not path.exists():
+        return {}
+
+    with open(path, "r", encoding="utf-8") as f:
+        content = yaml.safe_load(f)
+        return content if content else {}
+
+
+def expand_env_vars(obj: Any) -> Any:
+    """Recursively expand environment variables in strings."""
+    if isinstance(obj, str):
+        # Handle ${VAR} and $VAR patterns
+        if "${" in obj or (obj.startswith("$") and not obj.startswith("${")):
+            return os.path.expandvars(obj)
+        return obj
+    elif isinstance(obj, dict):
+        return {k: expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [expand_env_vars(item) for item in obj]
+    return obj
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """Deep merge two dictionaries."""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def load_settings(config_dir: Path | None = None) -> Settings:
+    """
+    Load settings from YAML file and environment variables.
+
+    Args:
+        config_dir: Path to the configuration directory. Defaults to PROJECT_ROOT/config.
+
+    Returns:
+        Validated Settings instance.
+    """
+    if config_dir is None:
+        config_dir = CONFIG_DIR
+
+    settings_path = config_dir / "settings.yaml"
+    yaml_config = load_yaml_file(settings_path)
+    yaml_config = expand_env_vars(yaml_config)
+
+    return Settings(**yaml_config)
+
+
+def load_sources_config(config_dir: Path | None = None) -> dict[str, Any]:
+    """
+    Load sources configuration from YAML file.
+
+    Args:
+        config_dir: Path to the configuration directory.
+
+    Returns:
+        Sources configuration dictionary.
+    """
+    if config_dir is None:
+        config_dir = CONFIG_DIR
+
+    sources_path = config_dir / "sources.yaml"
+    config = load_yaml_file(sources_path)
+    return expand_env_vars(config)
+
+
+def load_filters_config(config_dir: Path | None = None) -> dict[str, Any]:
+    """
+    Load filters configuration from YAML file.
+
+    Args:
+        config_dir: Path to the configuration directory.
+
+    Returns:
+        Filters configuration dictionary.
+    """
+    if config_dir is None:
+        config_dir = CONFIG_DIR
+
+    filters_path = config_dir / "filters.yaml"
+    config = load_yaml_file(filters_path)
+    return expand_env_vars(config)
+
+
+def load_alerts_config(config_dir: Path | None = None) -> dict[str, Any]:
+    """
+    Load alerts configuration from YAML file.
+
+    Args:
+        config_dir: Path to the configuration directory.
+
+    Returns:
+        Alerts configuration dictionary.
+    """
+    if config_dir is None:
+        config_dir = CONFIG_DIR
+
+    alerts_path = config_dir / "alerts.yaml"
+    config = load_yaml_file(alerts_path)
+    return expand_env_vars(config)
+
+
+# ==================================================
+# Global settings instance (lazy loaded)
+# ==================================================
+
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    """
+    Get the global settings instance.
+
+    Creates the instance on first call (lazy loading).
+
+    Returns:
+        The global Settings instance.
+    """
+    global _settings
+    if _settings is None:
+        _settings = load_settings()
+    return _settings
+
+
+def reload_settings() -> Settings:
+    """
+    Reload settings from configuration files.
+
+    Returns:
+        The newly loaded Settings instance.
+    """
+    global _settings
+    _settings = load_settings()
+    return _settings

@@ -1,0 +1,114 @@
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============================================
+# Virtual Environment
+# ============================================
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# ============================================
+# IDE
+# ============================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ============================================
+# Tests
+# ============================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ============================================
+# Type checking
+# ============================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ============================================
+# SentinelPi specifics
+# ============================================
+# Base de données
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Cache
+data/cache/
+*.cache
+
+# Exports et rapports générés
+data/exports/
+*.pdf
+*.html
+!src/reporting/templates/*.html.j2
+
+# Logs
+logs/
+*.log
+
+# Configuration sensible
+.env
+config/secrets.yaml
+
+# Backups
+*.bak
+*.backup
+backups/
+
+# ============================================
+# OS
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============================================
+# Temporary files
+# ============================================
+*.tmp
+*.temp
+tmp/
+temp/

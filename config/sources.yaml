@@ -1,0 +1,158 @@
+# SentinelPi - Configuration des sources
+# ==================================================
+# Types supportés : rss, web, reddit, mastodon, youtube, custom
+#
+# Paramètres communs :
+#   - name: Nom affiché
+#   - type: Type de collecteur
+#   - url: URL de la source
+#   - enabled: Activer/désactiver (défaut: true)
+#   - category: Catégorie pour le tri
+#   - tags: Liste de tags
+#   - interval_minutes: Fréquence de collecte (défaut: 60)
+#   - priority: 1=haute, 2=normale, 3=basse (défaut: 2)
+#   - config: Configuration spécifique au type
+
+sources:
+  # ==================================================
+  # FLUX RSS
+  # ==================================================
+
+  - name: "Le Monde - International"
+    type: rss
+    url: "https://www.lemonde.fr/international/rss_full.xml"
+    category: "presse"
+    tags: ["actualités", "international", "france"]
+    interval_minutes: 30
+    priority: 1
+    enabled: true
+
+  - name: "Le Portail de l'IE"
+    type: rss
+    url: "https://www.portail-ie.fr/feed/"
+    category: "veille"
+    tags: ["intelligence-economique", "veille", "strategie"]
+    interval_minutes: 60
+    priority: 1
+    enabled: true
+
+  - name: "Le Monde - Économie"
+    type: rss
+    url: "https://www.lemonde.fr/economie/rss_full.xml"
+    category: "presse"
+    tags: ["économie", "business"]
+    interval_minutes: 30
+    enabled: false
+
+  - name: "Les Echos - Tech"
+    type: rss
+    url: "https://www.lesechos.fr/tech-medias/rss.xml"
+    category: "presse"
+    tags: ["tech", "business"]
+    interval_minutes: 60
+    enabled: false
+
+  # ==================================================
+  # EXEMPLES - À PERSONNALISER
+  # ==================================================
+
+  # Exemple : Blog d'un concurrent
+  # - name: "Blog Concurrent A"
+  #   type: rss
+  #   url: "https://concurrent-a.com/blog/feed.xml"
+  #   category: "concurrents"
+  #   tags: ["concurrent-a", "veille"]
+  #   interval_minutes: 120
+  #   priority: 1
+
+  # ==================================================
+  # PAGES WEB (scraping)
+  # ==================================================
+
+  # Exemple : Page actualités d'un site
+  # - name: "Actualités Concurrent B"
+  #   type: web
+  #   url: "https://concurrent-b.fr/actualites"
+  #   category: "concurrents"
+  #   tags: ["concurrent-b"]
+  #   interval_minutes: 360
+  #   config:
+  #     # Sélecteur CSS pour les articles
+  #     selector: "article.news-item"
+  #     # Sélecteurs pour les champs
+  #     title_selector: "h2"
+  #     link_selector: "a"
+  #     date_selector: ".date"
+  #     content_selector: ".excerpt"
+  #     # Format de date (optionnel)
+  #     date_format: "%d/%m/%Y"
+
+  # ==================================================
+  # REDDIT
+  # ==================================================
+
+  - name: "r/technology"
+    type: reddit
+    url: "https://www.reddit.com/r/technology"
+    category: "social"
+    tags: ["reddit", "tech"]
+    interval_minutes: 120
+    enabled: false
+    config:
+      sort: "hot"
+      limit: 25
+
+  # ==================================================
+  # MASTODON
+  # ==================================================
+
+  - name: "Mastodon - #AI"
+    type: mastodon
+    url: "https://mastodon.social"
+    category: "social"
+    tags: ["mastodon", "ia"]
+    interval_minutes: 60
+    enabled: false  # Activer si souhaité
+    config:
+      type: "hashtag"  # hashtag, account, timeline
+      hashtag: "artificialintelligence"
+      limit: 20
+
+  # Exemple : Suivre un compte spécifique
+  # - name: "Mastodon - @compte@instance.social"
+  #   type: mastodon
+  #   url: "https://instance.social"
+  #   category: "social"
+  #   config:
+  #     type: "account"
+  #     account_id: "123456"
+  #     limit: 20
+
+  # ==================================================
+  # YOUTUBE (via flux RSS)
+  # ==================================================
+
+  # Exemple : Chaîne YouTube
+  # Pour obtenir l'ID : aller sur la chaîne, clic droit > voir source > chercher "channel_id"
+  # - name: "Chaîne YouTube Tech"
+  #   type: youtube
+  #   url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC_x5XG1OV2P6uZZ5FSM9Ttw"
+  #   category: "video"
+  #   tags: ["youtube", "tech"]
+  #   interval_minutes: 360
+
+  # ==================================================
+  # CUSTOM (collecteur personnalisé)
+  # ==================================================
+
+  # Pour des APIs spécifiques ou des sources non standard
+  # - name: "API Custom"
+  #   type: custom
+  #   url: "https://api.example.com/news"
+  #   category: "api"
+  #   config:
+  #     # Classe de collecteur personnalisé
+  #     collector_class: "MyCustomCollector"
+  #     # Paramètres spécifiques
+  #     api_key: "${CUSTOM_API_KEY}"
+  #     endpoint: "/v1/articles"

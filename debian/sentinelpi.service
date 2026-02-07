@@ -1,0 +1,40 @@
+[Unit]
+Description=SentinelPi - Station de veille multi-sources
+Documentation=https://github.com/sentinelpi/sentinelpi
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=sentinelpi
+Group=sentinelpi
+
+# Répertoires
+WorkingDirectory=/opt/sentinelpi
+Environment="PATH=/opt/sentinelpi/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="HOME=/opt/sentinelpi"
+
+# Commande
+ExecStart=/opt/sentinelpi/venv/bin/python -m src.main
+
+# Redémarrage automatique
+Restart=on-failure
+RestartSec=10
+
+# Sécurité
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/sentinelpi /var/log/sentinelpi /etc/sentinelpi /opt/sentinelpi
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinelpi
+
+[Install]
+WantedBy=multi-user.target

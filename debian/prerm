@@ -1,0 +1,18 @@
+#!/bin/bash
+# Pre-removal script for SentinelPi
+
+set -e
+
+echo "==> Arrêt des services SentinelPi..."
+
+# Arrêter les services
+systemctl stop sentinelpi 2>/dev/null || true
+systemctl stop sentinelpi-dashboard 2>/dev/null || true
+
+# Désactiver les services
+systemctl disable sentinelpi 2>/dev/null || true
+systemctl disable sentinelpi-dashboard 2>/dev/null || true
+
+echo "    Services arrêtés."
+
+exit 0

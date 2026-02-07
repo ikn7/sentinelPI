@@ -1,0 +1,679 @@
+"""
+Feed component for the SentinelPi dashboard.
+
+Displays collected items in a compact feed format.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from html import unescape
+from typing import Any, Sequence
+
+import streamlit as st
+
+from src.dashboard.utils import run_async
+from src.storage.models import Item, ItemStatus, Source
+from src.utils.dates import format_relative
+
+
+# Alias pour compatibilité avec les imports externes
+_run_async = run_async
+
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and decode entities from text."""
+    if not text:
+        return ""
+    # Remove HTML tags
+    clean = re.sub(r"<[^>]+>", " ", text)
+    # Decode HTML entities
+    clean = unescape(clean)
+    # Collapse whitespace
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
+
+
+async def _mark_item_read(item_id: str) -> None:
+    """Mark an item as read in the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+    from src.utils.dates import now
+    from src.processors.preference_learner import get_preference_learner
+
+    async with get_session() as session:
+        await session.execute(
+            update(Item)
+            .where(Item.id == item_id)
+            .values(status=ItemStatus.READ, read_at=now())
+        )
+        # Record action for preference learning
+        learner = get_preference_learner()
+        await learner.record_action(item_id, "read", session)
+        await session.commit()
+
+
+async def _archive_item(item_id: str) -> None:
+    """Archive an item in the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+    from src.processors.preference_learner import get_preference_learner
+
+    async with get_session() as session:
+        await session.execute(
+            update(Item)
+            .where(Item.id == item_id)
+            .values(status=ItemStatus.ARCHIVED)
+        )
+        # Record action for preference learning
+        learner = get_preference_learner()
+        await learner.record_action(item_id, "archive", session)
+        await session.commit()
+
+
+async def _delete_item(item_id: str) -> None:
+    """Delete an item from the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import delete
+    from src.processors.preference_learner import get_preference_learner
+
+    async with get_session() as session:
+        # Record action for preference learning BEFORE deletion
+        learner = get_preference_learner()
+        await learner.record_action(item_id, "delete", session)
+        # Now delete the item
+        await session.execute(delete(Item).where(Item.id == item_id))
+        await session.commit()
+
+
+async def _get_filter_details(filter_ids: list[str]) -> list[dict]:
+    """Load filter details from database by IDs."""
+    from src.storage.database import get_session
+    from src.storage.models import Filter
+    from sqlalchemy import select
+
+    if not filter_ids:
+        return []
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Filter).where(Filter.id.in_(filter_ids))
+        )
+        filters = result.scalars().all()
+
+        details = []
+        for f in filters:
+            action_val = f.action.value if hasattr(f.action, "value") else f.action
+            cond = f.conditions or {}
+            cond_type = cond.get("type", "")
+            cond_value = cond.get("value", [])
+
+            if cond_type == "keywords" and isinstance(cond_value, list):
+                cond_str = ", ".join(cond_value[:5])
+                if len(cond_value) > 5:
+                    cond_str += f" (+{len(cond_value) - 5})"
+            elif cond_type == "regex":
+                cond_str = f"regex: {cond_value}"
+            elif cond_type == "compound":
+                logic = cond.get("logic", "and")
+                sub = cond.get("conditions", [])
+                cond_str = f"{logic.upper()} ({len(sub)} conditions)"
+            else:
+                cond_str = str(cond)[:60]
+
+            details.append({
+                "name": f.name,
+                "action": action_val,
+                "score_mod": f.score_modifier,
+                "conditions": cond_str,
+            })
+        return details
+
+
+async def _share_via_telegram(title: str, url: str | None, summary: str | None, source_name: str) -> bool:
+    """Share an article via Telegram."""
+    try:
+        from src.alerting.telegram import create_telegram_channel
+        from src.alerting.dispatcher import AlertPayload
+        from src.storage.models import AlertSeverity
+
+        channel = create_telegram_channel()
+        if not channel.enabled:
+            return False
+
+        payload = AlertPayload(
+            alert_id="share",
+            severity=AlertSeverity.INFO,
+            title=title,
+            url=url,
+            summary=summary,
+            source_name=source_name,
+        )
+        return await channel.send(payload)
+    except Exception:
+        return False
+
+
+async def _share_via_email(title: str, url: str | None, summary: str | None, source_name: str) -> bool:
+    """Share an article via email."""
+    try:
+        from src.alerting.email import create_email_channel
+        from src.alerting.dispatcher import AlertPayload
+        from src.storage.models import AlertSeverity
+
+        channel = create_email_channel()
+        if not channel.enabled:
+            return False
+
+        payload = AlertPayload(
+            alert_id="share",
+            severity=AlertSeverity.INFO,
+            title=title,
+            url=url,
+            summary=summary,
+            source_name=source_name,
+        )
+        return await channel.send(payload)
+    except Exception:
+        return False
+
+
+async def _toggle_star(item_id: str, current_starred: bool) -> None:
+    """Toggle starred state for an item."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+    from src.processors.preference_learner import get_preference_learner
+
+    async with get_session() as session:
+        await session.execute(
+            update(Item)
+            .where(Item.id == item_id)
+            .values(starred=not current_starred)
+        )
+        # Record star action for preference learning (only when starring, not unstarring)
+        if not current_starred:
+            learner = get_preference_learner()
+            await learner.record_action(item_id, "star", session)
+        await session.commit()
+
+
+def render_item_card(
+    item: Item | dict[str, Any],
+    source: Source | dict[str, Any] | None = None,
+    show_actions: bool = True,
+) -> None:
+    """Render a single item as a compact row."""
+    # Handle both Item objects and dicts
+    if isinstance(item, dict):
+        title = item.get("title", "Sans titre")
+        url = item.get("url")
+        summary = item.get("summary") or item.get("content", "")[:200]
+        author = item.get("author")
+        published_at = item.get("published_at")
+        relevance_score = item.get("relevance_score", 0)
+        starred = item.get("starred", False)
+        item_id = item.get("id", "")
+        matched_filters = item.get("matched_filters", [])
+        keywords = item.get("keywords", [])
+        user_tags = item.get("user_tags", [])
+        sentiment = item.get("sentiment")
+        language = item.get("language")
+    else:
+        title = item.title
+        url = item.url
+        summary = item.summary or (item.content[:200] if item.content else "")
+        author = item.author
+        published_at = item.published_at
+        relevance_score = item.relevance_score
+        starred = item.starred
+        item_id = item.id
+        matched_filters = item.matched_filters or []
+        keywords = item.keywords or []
+        user_tags = item.user_tags or []
+        sentiment = item.sentiment
+        language = item.language
+
+    # Strip HTML from title and summary
+    title = _strip_html(title)
+    summary = _strip_html(summary)
+
+    # Truncate summary
+    if len(summary) > 300:
+        summary = summary[:300] + "..."
+
+    # Source info
+    source_name = ""
+    if source:
+        source_name = source.get("name") if isinstance(source, dict) else source.name
+
+    # Score badge with level indicator
+    # Scale: 0-100 where higher = more relevant
+    # 85+ Critical, 70-85 Important, 50-70 Interesting, 30-50 Normal, <30 Low
+    if relevance_score >= 85:
+        score_badge = f"🔴 {relevance_score:.0f}"  # Critical - requires attention
+        score_level = "critique"
+    elif relevance_score >= 70:
+        score_badge = f"🟠 {relevance_score:.0f}"  # Important
+        score_level = "important"
+    elif relevance_score >= 50:
+        score_badge = f"🟢 {relevance_score:.0f}"  # Interesting
+        score_level = "interessant"
+    elif relevance_score >= 30:
+        score_badge = f"🔵 {relevance_score:.0f}"  # Normal
+        score_level = "normal"
+    else:
+        score_badge = f"⚪ {relevance_score:.0f}"  # Low relevance
+        score_level = "faible"
+
+    # Sentiment badge
+    sentiment_badge = ""
+    if sentiment == "positive":
+        sentiment_badge = "😊"
+    elif sentiment == "negative":
+        sentiment_badge = "😟"
+    elif sentiment == "neutral":
+        sentiment_badge = "😐"
+
+    # Build metadata line
+    meta_parts = []
+    if source_name:
+        meta_parts.append(source_name)
+    if author:
+        meta_parts.append(author)
+    if published_at:
+        if isinstance(published_at, str):
+            meta_parts.append(published_at)
+        else:
+            meta_parts.append(format_relative(published_at))
+    if score_badge:
+        meta_parts.append(score_badge)
+    if sentiment_badge:
+        meta_parts.append(sentiment_badge)
+    if language:
+        meta_parts.append(language.upper())
+
+    # Single-line: title + inline actions via HTML
+    star = "⭐ " if starred else ""
+    link_title = f"[{title}]({url})" if url else title
+
+    # Title row with compact actions
+    if show_actions:
+        col_title, col_actions = st.columns([7, 3])
+    else:
+        col_title = st.container()
+        col_actions = None
+
+    with col_title:
+        st.markdown(f"**{star}{link_title}**")
+
+    if show_actions and col_actions is not None:
+        with col_actions:
+            # Single dropdown action menu - cleaner than multiple emoji buttons
+            col_menu, col_info = st.columns([2, 1])
+
+            with col_menu:
+                star_label = "Retirer favori" if starred else "Ajouter favori"
+                actions = [
+                    "-- Actions --",
+                    f"⭐ {star_label}",
+                    "✅ Marquer lu",
+                    "📁 Archiver",
+                    "🗑️ Supprimer",
+                ]
+
+                selected_action = st.selectbox(
+                    "Actions",
+                    options=actions,
+                    key=f"action_{item_id}",
+                    label_visibility="collapsed",
+                )
+
+                if selected_action != "-- Actions --":
+                    if "favori" in selected_action:
+                        _run_async(_toggle_star(item_id, starred))
+                        st.rerun()
+                    elif "Marquer lu" in selected_action:
+                        _run_async(_mark_item_read(item_id))
+                        st.rerun()
+                    elif "Archiver" in selected_action:
+                        _run_async(_archive_item(item_id))
+                        st.rerun()
+                    elif "Supprimer" in selected_action:
+                        _run_async(_delete_item(item_id))
+                        st.rerun()
+
+            with col_info:
+                with st.popover("ℹ️", help="Score & partage"):
+                    # Score level colors and meanings
+                    score_config = {
+                        "critique": ("#dc2626", "🔴", "Très pertinent - À lire en priorité"),
+                        "important": ("#ea580c", "🟠", "Pertinent - Mérite attention"),
+                        "interessant": ("#16a34a", "🟢", "Intéressant - Correspond à vos critères"),
+                        "normal": ("#2563eb", "🔵", "Standard - Contenu classique"),
+                        "faible": ("#6b7280", "⚪", "Peu pertinent - Bruit potentiel"),
+                    }
+                    color, icon, meaning = score_config.get(score_level, ("#6b7280", "⚪", ""))
+
+                    # Big score display with meaning
+                    st.markdown(f"""
+                    <div style="text-align:center;padding:12px;background:linear-gradient(135deg,{color}15,{color}05);
+                    border:2px solid {color}40;border-radius:12px;margin-bottom:16px;">
+                        <div style="font-size:2.5rem;font-weight:bold;color:{color};">{icon} {relevance_score:.0f}</div>
+                        <div style="font-size:0.9rem;color:{color};font-weight:500;margin-top:4px;">{meaning}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Score scale explanation
+                    st.markdown("**📏 Échelle de pertinence**")
+                    scale_html = """
+                    <div style="font-size:0.75rem;margin-bottom:12px;">
+                        <div style="display:flex;align-items:center;margin:3px 0;"><span style="color:#dc2626;">🔴 85-100</span><span style="margin-left:8px;opacity:0.8;">Critique - Action requise</span></div>
+                        <div style="display:flex;align-items:center;margin:3px 0;"><span style="color:#ea580c;">🟠 70-84</span><span style="margin-left:8px;opacity:0.8;">Important - À surveiller</span></div>
+                        <div style="display:flex;align-items:center;margin:3px 0;"><span style="color:#16a34a;">🟢 50-69</span><span style="margin-left:8px;opacity:0.8;">Intéressant - Pertinent</span></div>
+                        <div style="display:flex;align-items:center;margin:3px 0;"><span style="color:#2563eb;">🔵 30-49</span><span style="margin-left:8px;opacity:0.8;">Normal - Standard</span></div>
+                        <div style="display:flex;align-items:center;margin:3px 0;"><span style="color:#6b7280;">⚪ 0-29</span><span style="margin-left:8px;opacity:0.8;">Faible - Peu pertinent</span></div>
+                    </div>
+                    """
+                    st.markdown(scale_html, unsafe_allow_html=True)
+
+                    # What contributes to the score
+                    st.markdown("**🧮 Comment le score est calculé**")
+
+                    # Get filter contributions
+                    filter_details = _run_async(_get_filter_details(matched_filters)) if matched_filters else []
+                    filter_score = sum(fd.get('score_mod', 0) for fd in filter_details)
+
+                    # Base components explanation
+                    contrib_items = [
+                        ("🏁", "Base", "+50", "Tout article commence à 50"),
+                    ]
+
+                    # Estimate recency based on published_at
+                    if published_at:
+                        try:
+                            from src.utils.dates import now as get_now
+                            from datetime import timezone
+                            current = get_now()
+                            pub = published_at
+                            if hasattr(pub, 'tzinfo') and pub.tzinfo is None:
+                                pub = pub.replace(tzinfo=timezone.utc)
+                            if hasattr(pub, 'timestamp'):
+                                age_hours = (current - pub).total_seconds() / 3600
+                                if age_hours < 6:
+                                    contrib_items.append(("⏱️", "Très frais (<6h)", "+18-20", "Bonus maximum"))
+                                elif age_hours < 24:
+                                    contrib_items.append(("⏱️", "Récent (<24h)", "+12-18", "Bon bonus fraîcheur"))
+                                elif age_hours < 48:
+                                    contrib_items.append(("⏱️", "Assez récent (<48h)", "+6-12", "Bonus modéré"))
+                                else:
+                                    contrib_items.append(("⏱️", "Ancien (>48h)", "+0-6", "Peu de bonus"))
+                        except:
+                            contrib_items.append(("⏱️", "Fraîcheur", "+0-20", "Selon l'âge"))
+
+                    contrib_items.append(("⭐", "Source prioritaire", "+4-15", "Selon priorité source"))
+                    contrib_items.append(("📝", "Qualité contenu", "+0-15", "Longueur, image, auteur"))
+
+                    if filter_score > 0:
+                        contrib_items.append(("🎯", f"Filtres ({len(filter_details)})", f"+{filter_score}", "Vos filtres matchent!"))
+                    elif filter_score < 0:
+                        contrib_items.append(("🎯", f"Filtres ({len(filter_details)})", str(filter_score), "Pénalité filtre"))
+
+                    for emoji, label, points, desc in contrib_items:
+                        points_color = "#16a34a" if points.startswith("+") else "#dc2626" if points.startswith("-") else "#6b7280"
+                        st.markdown(f"""
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #f3f4f6;">
+                            <div><span style="margin-right:6px;">{emoji}</span><span style="font-size:0.85rem;">{label}</span></div>
+                            <div style="text-align:right;">
+                                <span style="font-weight:600;color:{points_color};">{points}</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    st.caption(f"_{desc}_" if contrib_items else "")
+
+                    # Matched filters detail
+                    if filter_details:
+                        st.markdown("---")
+                        st.markdown("**🎯 Filtres qui ont matché**")
+                        for fd in filter_details:
+                            mod = f"+{fd['score_mod']}" if fd['score_mod'] > 0 else str(fd['score_mod']) if fd['score_mod'] != 0 else "±0"
+                            action_badges = {
+                                "alert": ("🔔 Alerte", "#dc2626"),
+                                "highlight": ("✨ Important", "#ea580c"),
+                                "tag": ("🏷️ Tag", "#2563eb"),
+                                "exclude": ("🚫 Exclus", "#6b7280"),
+                                "include": ("✅ Inclus", "#16a34a"),
+                            }
+                            badge_text, badge_color = action_badges.get(fd['action'], ("📋", "#6b7280"))
+                            st.markdown(f"""
+                            <div style="background:{badge_color}10;border-left:3px solid {badge_color};padding:8px;margin:6px 0;border-radius:4px;">
+                                <div style="font-weight:600;color:{badge_color};">{badge_text} · {fd['name']} ({mod})</div>
+                                <div style="font-size:0.8rem;opacity:0.8;margin-top:2px;">Conditions: {fd['conditions'][:80]}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                    # Open link button
+                    if url:
+                        st.link_button("🔗 Ouvrir l'article", url, use_container_width=True)
+
+                    # Share section
+                    st.markdown("---")
+                    st.markdown("**📤 Partager**")
+                    share_text = f"{title}\n{url}" if url else title
+                    if summary:
+                        share_text = f"{title}\n\n{summary[:200]}\n\n{url}" if url else f"{title}\n\n{summary[:200]}"
+
+                    share_col1, share_col2 = st.columns(2)
+                    with share_col1:
+                        if st.button("📱 Telegram", key=f"sh_tg_{item_id}", use_container_width=True):
+                            result = _run_async(_share_via_telegram(title, url, summary, source_name))
+                            if result:
+                                st.success("Envoyé!")
+                            else:
+                                st.warning("Non configuré")
+                    with share_col2:
+                        if st.button("📧 Email", key=f"sh_em_{item_id}", use_container_width=True):
+                            result = _run_async(_share_via_email(title, url, summary, source_name))
+                            if result:
+                                st.success("Envoyé!")
+                            else:
+                                st.warning("Non configuré")
+
+                    st.text_area("Copier le texte", value=share_text, height=60, key=f"sh_cp_{item_id}", label_visibility="collapsed")
+
+    # Metadata
+    if meta_parts:
+        st.caption(" · ".join(meta_parts))
+
+    # Summary
+    if summary:
+        st.markdown(f'<p style="margin:-8px 0 2px 0;font-size:0.85em;color:#555;">{summary}</p>', unsafe_allow_html=True)
+
+    # Matched filters - show prominently which filters selected this article
+    if matched_filters:
+        filter_details = _run_async(_get_filter_details(matched_filters))
+        if filter_details:
+            # Action-based colors for filter badges
+            action_styles = {
+                "alert": ("🔔", "#ef4444", "#fef2f2"),      # Red
+                "highlight": ("✨", "#f59e0b", "#fffbeb"),  # Amber
+                "tag": ("🏷️", "#3b82f6", "#eff6ff"),       # Blue
+                "include": ("✅", "#22c55e", "#f0fdf4"),    # Green
+                "exclude": ("🚫", "#6b7280", "#f9fafb"),    # Gray
+            }
+
+            filter_badges = []
+            for fd in filter_details:
+                icon, color, bg = action_styles.get(fd['action'], ("📋", "#6b7280", "#f9fafb"))
+                mod_str = f"+{fd['score_mod']}" if fd['score_mod'] > 0 else str(fd['score_mod']) if fd['score_mod'] != 0 else ""
+                mod_display = f" ({mod_str})" if mod_str else ""
+                # Tooltip with conditions
+                conditions_tooltip = fd['conditions'].replace('"', '&quot;')[:100]
+                filter_badges.append(
+                    f'<span title="Condition: {conditions_tooltip}" '
+                    f'style="display:inline-block;background:{bg};color:{color};'
+                    f'border:1px solid {color}33;border-radius:12px;padding:2px 8px;'
+                    f'font-size:0.75rem;margin-right:4px;margin-bottom:4px;cursor:help;">'
+                    f'{icon} {fd["name"]}{mod_display}</span>'
+                )
+
+            st.markdown(
+                f'<div style="margin:4px 0 8px 0;">{"".join(filter_badges)}</div>',
+                unsafe_allow_html=True
+            )
+
+    # Tags and keywords inline
+    tag_parts = []
+    if user_tags:
+        tag_parts.extend([f"`{t}`" for t in user_tags])
+    if keywords:
+        tag_parts.extend([f"`{k}`" for k in keywords[:5]])
+    if tag_parts:
+        st.markdown(" ".join(tag_parts))
+
+    st.divider()
+
+
+def render_feed_items(
+    items: Sequence[Item | dict[str, Any]],
+    sources: dict[str, Source | dict[str, Any]] | None = None,
+    show_actions: bool = True,
+) -> None:
+    """
+    Render a list of feed items (without pagination - pagination is handled by caller).
+
+    Args:
+        items: Items to render (already paginated by server)
+        sources: Dictionary of sources keyed by source_id
+        show_actions: Whether to show action buttons
+    """
+    if not items:
+        st.info("Aucun item.", icon="ℹ️")
+        return
+
+    sources = sources or {}
+
+    # Render items
+    for item in items:
+        if isinstance(item, dict):
+            source_id = item.get("source_id", "")
+        else:
+            source_id = item.source_id
+
+        source = sources.get(source_id)
+        render_item_card(item, source, show_actions=show_actions)
+
+
+def render_feed(
+    items: Sequence[Item | dict[str, Any]],
+    sources: dict[str, Source | dict[str, Any]] | None = None,
+    page_size: int = 20,
+    show_actions: bool = True,
+) -> None:
+    """
+    Render a feed of items with client-side pagination.
+
+    DEPRECATED: Use render_feed_items with server-side pagination instead.
+    Kept for backward compatibility.
+
+    Args:
+        items: All items (pagination done client-side)
+        sources: Dictionary of sources keyed by source_id
+        page_size: Number of items per page
+        show_actions: Whether to show action buttons
+    """
+    if not items:
+        st.info("Aucun item.", icon="ℹ️")
+        return
+
+    sources = sources or {}
+
+    # Pagination
+    total_items = len(items)
+    total_pages = (total_items + page_size - 1) // page_size
+
+    if "feed_page" not in st.session_state:
+        st.session_state.feed_page = 0
+
+    # Ensure page is within bounds
+    if st.session_state.feed_page >= total_pages:
+        st.session_state.feed_page = max(0, total_pages - 1)
+
+    # Page items
+    start_idx = st.session_state.feed_page * page_size
+    end_idx = min(start_idx + page_size, total_items)
+    page_items = items[start_idx:end_idx]
+
+    # Render items
+    for item in page_items:
+        if isinstance(item, dict):
+            source_id = item.get("source_id", "")
+        else:
+            source_id = item.source_id
+
+        source = sources.get(source_id)
+        render_item_card(item, source, show_actions=show_actions)
+
+    # Pagination controls
+    if total_pages > 1:
+        col1, col2, col3 = st.columns([1, 2, 1])
+
+        with col1:
+            if st.button("⬅️ Précédent", disabled=st.session_state.feed_page == 0, key="feed_prev_legacy"):
+                st.session_state.feed_page -= 1
+                st.rerun()
+
+        with col2:
+            page_select = st.selectbox(
+                "Page",
+                options=range(total_pages),
+                index=st.session_state.feed_page,
+                format_func=lambda x: f"Page {x + 1}/{total_pages}",
+                label_visibility="collapsed",
+            )
+            if page_select != st.session_state.feed_page:
+                st.session_state.feed_page = page_select
+                st.rerun()
+
+        with col3:
+            if st.button("Suivant ➡️", disabled=st.session_state.feed_page >= total_pages - 1):
+                st.session_state.feed_page += 1
+                st.rerun()
+
+
+def render_compact_feed(
+    items: Sequence[Item | dict[str, Any]],
+    max_items: int = 10,
+) -> None:
+    """Render a compact feed (for widgets/sidebars)."""
+    if not items:
+        st.caption("Aucun item récent")
+        return
+
+    for item in items[:max_items]:
+        if isinstance(item, dict):
+            title = _strip_html(item.get("title", "Sans titre"))
+            url = item.get("url")
+            published_at = item.get("published_at")
+        else:
+            title = _strip_html(item.title)
+            url = item.url
+            published_at = item.published_at
+
+        if len(title) > 60:
+            title = title[:57] + "..."
+
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            if url:
+                st.markdown(f"[{title}]({url})")
+            else:
+                st.text(title)
+
+        with col2:
+            if published_at:
+                if isinstance(published_at, datetime):
+                    st.caption(format_relative(published_at))
+                else:
+                    st.caption(published_at)
