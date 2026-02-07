@@ -1,0 +1,124 @@
+"""Tests for the Custom collector."""
+
+from __future__ import annotations
+
+import json
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from src.collectors.custom import CustomCollector
+from src.collectors.base import CollectedItem, CollectorError
+from src.storage.models import Source, SourceType
+
+
+@pytest.fixture
+def custom_source():
+    """Create a test custom API source."""
+    source = MagicMock(spec=Source)
+    source.id = "test-custom-1"
+    source.name = "Custom API"
+    source.url = "https://api.example.com/articles"
+    source.type = SourceType.CUSTOM
+    config = {
+        "items_path": "data.articles",
+        "mapping": {
+            "guid": "id",
+            "title": "headline",
+            "url": "link",
+        },
+        "max_items": 10,
+    }
+    source.config_json = json.dumps(config)
+    source.config = config
+    return source
+
+
+@pytest.fixture
+def custom_api_response():
+    """Sample custom API response."""
+    return {
+        "data": {
+            "articles": [
+                {
+                    "id": "art-001",
+                    "headline": "Test Article",
+                    "link": "https://example.com/art-001",
+                    "author": "Jane Doe",
+                    "body": "Full article content here.",
+                    "description": "Short summary.",
+                    "date": "2026-01-15T10:00:00Z",
+                },
+                {
+                    "id": "art-002",
+                    "headline": "Another Article",
+                    "link": "https://example.com/art-002",
+                    "body": "More content.",
+                    "date": "2026-01-14T10:00:00Z",
+                },
+            ]
+        }
+    }
+
+
+class TestCustomCollector:
+    def test_supports_source_type(self):
+        assert CustomCollector.supports_source_type() == SourceType.CUSTOM
+
+    @pytest.mark.asyncio
+    async def test_collect_with_nested_path(self, custom_source, custom_api_response):
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = custom_api_response
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_response)
+
+        collector = CustomCollector(custom_source, http_client=mock_http)
+        items = []
+        async for item in collector.collect():
+            items.append(item)
+
+        assert len(items) == 2
+        assert items[0].title == "Test Article"
+        assert items[0].guid == "art-001"
+        assert items[0].url == "https://example.com/art-001"
+
+    @pytest.mark.asyncio
+    async def test_collect_flat_list(self, custom_source):
+        config = {"items_path": "", "max_items": 10}
+        custom_source.config_json = json.dumps(config)
+        custom_source.config = config
+
+        api_data = [
+            {"id": "1", "title": "Item One"},
+            {"id": "2", "title": "Item Two"},
+        ]
+
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.json.return_value = api_data
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_response)
+
+        collector = CustomCollector(custom_source, http_client=mock_http)
+        items = []
+        async for item in collector.collect():
+            items.append(item)
+
+        assert len(items) == 2
+
+    @pytest.mark.asyncio
+    async def test_collect_api_error(self, custom_source):
+        mock_response = MagicMock()
+        mock_response.ok = False
+        mock_response.status_code = 403
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_response)
+
+        collector = CustomCollector(custom_source, http_client=mock_http)
+        with pytest.raises(CollectorError):
+            async for _ in collector.collect():
+                pass

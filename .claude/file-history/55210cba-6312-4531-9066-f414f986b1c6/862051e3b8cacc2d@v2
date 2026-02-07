@@ -1,0 +1,321 @@
+"""Routes API pour les alertes."""
+
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select
+
+from src.storage import db
+from src.storage.models import Alert, Competitor, Regulation, SEVERITY_ORDER
+
+router = APIRouter()
+
+
+# =============================================================================
+# Modèles Pydantic
+# =============================================================================
+
+class AlertResponse(BaseModel):
+    """Modèle de réponse pour une alerte."""
+    id: str
+    type: str
+    categorie: str
+    severite: str
+    titre: str
+    message: str
+    competitor_id: Optional[str] = None
+    competitor_name: Optional[str] = None
+    regulation_id: Optional[str] = None
+    source_url: Optional[str] = None
+    created_at: datetime
+    read_at: Optional[datetime] = None
+    notified: bool
+    notified_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AlertStats(BaseModel):
+    """Statistiques des alertes."""
+    total: int
+    unread: int
+    by_severity: dict[str, int]
+    by_category: dict[str, int]
+    recent_24h: int
+
+
+class MarkReadRequest(BaseModel):
+    """Requête pour marquer des alertes comme lues."""
+    alert_ids: list[str]
+
+
+# =============================================================================
+# Routes
+# =============================================================================
+
+@router.get("", response_model=list[AlertResponse])
+async def list_alerts(
+    categorie: Optional[str] = Query(None, description="Filtrer par catégorie"),
+    severite: Optional[str] = Query(None, description="Filtrer par sévérité"),
+    unread: Optional[bool] = Query(None, description="Uniquement les non lues"),
+    competitor_id: Optional[str] = Query(None, description="Filtrer par concurrent"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Liste les alertes."""
+    async with db.session() as session:
+        query = select(Alert).order_by(Alert.created_at.desc())
+
+        if categorie:
+            query = query.where(Alert.categorie == categorie)
+        if severite:
+            query = query.where(Alert.severite == severite)
+        if unread is True:
+            query = query.where(Alert.read_at == None)
+        if unread is False:
+            query = query.where(Alert.read_at != None)
+        if competitor_id:
+            query = query.where(Alert.competitor_id == competitor_id)
+
+        query = query.limit(limit).offset(offset)
+        result = await session.execute(query)
+
+        alerts = []
+        for alert in result.scalars().all():
+            # Récupérer le nom du concurrent si applicable
+            competitor_name = None
+            if alert.competitor_id:
+                comp_result = await session.execute(
+                    select(Competitor.nom).where(Competitor.id == alert.competitor_id)
+                )
+                competitor_name = comp_result.scalar()
+
+            alerts.append(AlertResponse(
+                id=alert.id,
+                type=alert.type,
+                categorie=alert.categorie,
+                severite=alert.severite,
+                titre=alert.titre,
+                message=alert.message,
+                competitor_id=alert.competitor_id,
+                competitor_name=competitor_name,
+                regulation_id=alert.regulation_id,
+                source_url=alert.source_url,
+                created_at=alert.created_at,
+                read_at=alert.read_at,
+                notified=alert.notified,
+                notified_at=alert.notified_at,
+            ))
+
+        return alerts
+
+
+@router.get("/stats", response_model=AlertStats)
+async def get_alert_stats():
+    """Récupère les statistiques des alertes."""
+    from datetime import timedelta
+
+    async with db.session() as session:
+        # Total
+        total_result = await session.execute(select(func.count(Alert.id)))
+        total = total_result.scalar() or 0
+
+        # Non lues
+        unread_result = await session.execute(
+            select(func.count(Alert.id)).where(Alert.read_at == None)
+        )
+        unread = unread_result.scalar() or 0
+
+        # Par sévérité
+        severity_result = await session.execute(
+            select(Alert.severite, func.count(Alert.id))
+            .where(Alert.read_at == None)
+            .group_by(Alert.severite)
+        )
+        by_severity = {row[0]: row[1] for row in severity_result.all()}
+
+        # Par catégorie
+        category_result = await session.execute(
+            select(Alert.categorie, func.count(Alert.id))
+            .where(Alert.read_at == None)
+            .group_by(Alert.categorie)
+        )
+        by_category = {row[0]: row[1] for row in category_result.all()}
+
+        # Dernières 24h
+        since = datetime.now() - timedelta(hours=24)
+        recent_result = await session.execute(
+            select(func.count(Alert.id)).where(Alert.created_at >= since)
+        )
+        recent_24h = recent_result.scalar() or 0
+
+        return AlertStats(
+            total=total,
+            unread=unread,
+            by_severity=by_severity,
+            by_category=by_category,
+            recent_24h=recent_24h,
+        )
+
+
+@router.get("/critical", response_model=list[AlertResponse])
+async def get_critical_alerts(
+    limit: int = Query(10, ge=1, le=50),
+):
+    """Récupère les alertes critiques non lues."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Alert)
+            .where(
+                Alert.read_at == None,
+                Alert.severite.in_(["critique", "important"])
+            )
+            .order_by(Alert.created_at.desc())
+            .limit(limit)
+        )
+
+        alerts = []
+        for alert in result.scalars().all():
+            competitor_name = None
+            if alert.competitor_id:
+                comp_result = await session.execute(
+                    select(Competitor.nom).where(Competitor.id == alert.competitor_id)
+                )
+                competitor_name = comp_result.scalar()
+
+            alerts.append(AlertResponse(
+                id=alert.id,
+                type=alert.type,
+                categorie=alert.categorie,
+                severite=alert.severite,
+                titre=alert.titre,
+                message=alert.message,
+                competitor_id=alert.competitor_id,
+                competitor_name=competitor_name,
+                regulation_id=alert.regulation_id,
+                source_url=alert.source_url,
+                created_at=alert.created_at,
+                read_at=alert.read_at,
+                notified=alert.notified,
+                notified_at=alert.notified_at,
+            ))
+
+        return alerts
+
+
+@router.get("/{alert_id}", response_model=AlertResponse)
+async def get_alert(alert_id: str):
+    """Récupère une alerte spécifique."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Alert).where(Alert.id == alert_id)
+        )
+        alert = result.scalar_one_or_none()
+
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alerte non trouvée")
+
+        competitor_name = None
+        if alert.competitor_id:
+            comp_result = await session.execute(
+                select(Competitor.nom).where(Competitor.id == alert.competitor_id)
+            )
+            competitor_name = comp_result.scalar()
+
+        return AlertResponse(
+            id=alert.id,
+            type=alert.type,
+            categorie=alert.categorie,
+            severite=alert.severite,
+            titre=alert.titre,
+            message=alert.message,
+            competitor_id=alert.competitor_id,
+            competitor_name=competitor_name,
+            regulation_id=alert.regulation_id,
+            source_url=alert.source_url,
+            created_at=alert.created_at,
+            read_at=alert.read_at,
+            notified=alert.notified,
+            notified_at=alert.notified_at,
+        )
+
+
+@router.post("/{alert_id}/read")
+async def mark_alert_read(alert_id: str):
+    """Marque une alerte comme lue."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Alert).where(Alert.id == alert_id)
+        )
+        alert = result.scalar_one_or_none()
+
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alerte non trouvée")
+
+        alert.read_at = datetime.now()
+        await session.commit()
+
+        return {"status": "ok", "read_at": alert.read_at}
+
+
+@router.post("/mark-read")
+async def mark_alerts_read(request: MarkReadRequest):
+    """Marque plusieurs alertes comme lues."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Alert).where(Alert.id.in_(request.alert_ids))
+        )
+
+        now = datetime.now()
+        count = 0
+        for alert in result.scalars():
+            if alert.read_at is None:
+                alert.read_at = now
+                count += 1
+
+        await session.commit()
+
+        return {"status": "ok", "marked": count}
+
+
+@router.post("/mark-all-read")
+async def mark_all_alerts_read(
+    categorie: Optional[str] = Query(None),
+):
+    """Marque toutes les alertes comme lues."""
+    async with db.session() as session:
+        query = select(Alert).where(Alert.read_at == None)
+
+        if categorie:
+            query = query.where(Alert.categorie == categorie)
+
+        result = await session.execute(query)
+
+        now = datetime.now()
+        count = 0
+        for alert in result.scalars():
+            alert.read_at = now
+            count += 1
+
+        await session.commit()
+
+        return {"status": "ok", "marked": count}
+
+
+@router.delete("/{alert_id}", status_code=204)
+async def delete_alert(alert_id: str):
+    """Supprime une alerte."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Alert).where(Alert.id == alert_id)
+        )
+        alert = result.scalar_one_or_none()
+
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alerte non trouvée")
+
+        await session.delete(alert)
+        await session.commit()

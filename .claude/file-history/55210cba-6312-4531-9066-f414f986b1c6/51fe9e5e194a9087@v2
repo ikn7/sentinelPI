@@ -1,0 +1,129 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stratwatch"
+version = "1.0.0"
+description = "Plateforme de veille stratégique - Intelligence économique sur Raspberry Pi"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "StratWatch Team"}
+]
+keywords = ["veille", "intelligence économique", "concurrence", "réglementation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business",
+]
+
+dependencies = [
+    # Core
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "pyyaml>=6.0.1",
+
+    # Database
+    "sqlalchemy>=2.0.23",
+    "alembic>=1.13.0",
+    "aiosqlite>=0.19.0",
+
+    # HTTP & Async
+    "httpx>=0.26.0",
+    "tenacity>=8.2.3",
+    "aiofiles>=23.2.1",
+
+    # Parsing
+    "beautifulsoup4>=4.12.2",
+    "lxml>=5.0.0",
+    "feedparser>=6.0.10",
+    "python-dateutil>=2.8.2",
+
+    # NLP
+    "spacy>=3.7.2",
+
+    # API
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+
+    # Dashboard
+    "streamlit>=1.30.0",
+
+    # Alerting
+    "python-telegram-bot>=20.7",
+    "aiosmtplib>=3.0.1",
+
+    # Reporting
+    "jinja2>=3.1.2",
+    "weasyprint>=60.2",
+    "markdown>=3.5.1",
+
+    # Scheduling
+    "apscheduler>=3.10.4",
+
+    # Logging
+    "loguru>=0.7.2",
+
+    # Utils
+    "python-dotenv>=1.0.0",
+    "click>=8.1.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.4",
+    "pytest-asyncio>=0.23.3",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "respx>=0.20.2",
+    "ruff>=0.1.11",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+]
+
+postgres = [
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.9",
+]
+
+[project.scripts]
+stratwatch = "stratwatch.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

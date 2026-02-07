@@ -1,0 +1,789 @@
+"""Interface en ligne de commande pour StratWatch."""
+
+import asyncio
+import sys
+from typing import Optional
+
+import click
+
+from src.config import get_settings, load_competitors, PROJECT_ROOT
+from src.utils.logging import setup_logging, get_logger
+
+
+@click.group()
+@click.version_option(version="1.0.0", prog_name="StratWatch")
+@click.option("--debug/--no-debug", default=False, help="Mode debug")
+def main(debug: bool) -> None:
+    """StratWatch - Plateforme de veille stratégique."""
+    settings = get_settings()
+    log_level = "DEBUG" if debug else settings.logging.level
+
+    setup_logging(
+        level=log_level,
+        log_format=settings.logging.format,
+        rotation=settings.logging.rotation,
+        retention=settings.logging.retention,
+        log_dir=settings.get_log_dir(),
+    )
+
+
+@main.group()
+def db() -> None:
+    """Commandes de gestion de la base de données."""
+    pass
+
+
+@db.command("init")
+def db_init() -> None:
+    """Initialise la base de données et crée les tables."""
+    from src.storage import init_database
+
+    logger = get_logger("cli")
+    logger.info("Initialisation de la base de données...")
+
+    asyncio.run(init_database())
+
+    logger.info("Base de données initialisée avec succès")
+    click.echo("Base de données initialisée.")
+
+
+@db.command("reset")
+@click.confirmation_option(prompt="Êtes-vous sûr de vouloir supprimer toutes les données ?")
+def db_reset() -> None:
+    """Réinitialise la base de données (supprime toutes les données)."""
+    from src.storage import db, init_database
+
+    logger = get_logger("cli")
+
+    async def reset():
+        await db.init()
+        await db.drop_tables()
+        await db.create_tables()
+        await db.close()
+
+    logger.warning("Réinitialisation de la base de données...")
+    asyncio.run(reset())
+
+    logger.info("Base de données réinitialisée")
+    click.echo("Base de données réinitialisée.")
+
+
+@main.group()
+def collect() -> None:
+    """Commandes de collecte de données."""
+    pass
+
+
+@collect.command("legal")
+@click.option("--siren", "-s", help="SIREN spécifique à collecter")
+@click.option("--all", "collect_all", is_flag=True, help="Collecter tous les concurrents configurés")
+def collect_legal(siren: Optional[str], collect_all: bool) -> None:
+    """Collecte les données légales via Pappers."""
+    from src.collectors import PappersCollector
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_collection():
+        await db.init()
+        await db.create_tables()
+
+        async with PappersCollector() as collector:
+            async with db.session() as session:
+                if siren:
+                    result = await collector.collect_with_details(siren, session)
+                    click.echo(f"Collecte terminée: {result.items_collected} éléments collectés, "
+                              f"{result.items_saved} sauvegardés")
+                elif collect_all:
+                    competitors_config = load_competitors()
+                    for comp in competitors_config.competitors:
+                        result = await collector.collect_with_details(comp.siren, session)
+                        click.echo(f"[{comp.siren}] {comp.nom}: {result.items_saved} éléments")
+                else:
+                    click.echo("Spécifiez --siren ou --all")
+                    return
+
+        await db.close()
+
+    logger.info("Démarrage de la collecte des données légales")
+    asyncio.run(run_collection())
+
+
+@collect.command("search")
+@click.argument("query")
+@click.option("--limit", "-n", default=10, help="Nombre de résultats")
+def collect_search(query: str, limit: int) -> None:
+    """Recherche des entreprises par nom."""
+    from src.collectors import PappersCollector
+
+    logger = get_logger("cli")
+
+    async def run_search():
+        async with PappersCollector() as collector:
+            results = await collector.search_companies(query, limit=limit)
+
+            if not results:
+                click.echo("Aucun résultat trouvé.")
+                return
+
+            click.echo(f"\n{len(results)} entreprise(s) trouvée(s):\n")
+            for company in results:
+                click.echo(f"  SIREN: {company['siren']}")
+                click.echo(f"  Nom: {company['nom']}")
+                click.echo(f"  Forme: {company['forme_juridique']}")
+                click.echo(f"  NAF: {company['code_naf']}")
+                click.echo(f"  Ville: {company['ville']}")
+                click.echo("")
+
+    logger.info(f"Recherche d'entreprises: {query}")
+    asyncio.run(run_search())
+
+
+@collect.command("bodacc")
+@click.option("--siren", "-s", help="SIREN spécifique à surveiller")
+@click.option("--all", "collect_all", is_flag=True, help="Collecter pour tous les concurrents")
+def collect_bodacc(siren: Optional[str], collect_all: bool) -> None:
+    """Collecte les annonces légales BODACC."""
+    from src.collectors import BodaccCollector
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_collection():
+        await db.init()
+        await db.create_tables()
+
+        async with BodaccCollector() as collector:
+            async with db.session() as session:
+                if siren:
+                    result = await collector.collect_and_save(session, siren=siren)
+                    click.echo(f"BODACC [{siren}]: {result.items_collected} annonces trouvées, "
+                              f"{result.items_saved} nouvelles")
+                elif collect_all:
+                    result = await collector.collect_and_save(session)
+                    click.echo(f"BODACC: {result.items_collected} annonces analysées, "
+                              f"{result.items_saved} nouvelles sauvegardées")
+                else:
+                    click.echo("Spécifiez --siren ou --all")
+                    return
+
+                if not result.success:
+                    click.echo(f"Erreurs: {result.errors}")
+
+        await db.close()
+
+    logger.info("Démarrage de la collecte BODACC")
+    asyncio.run(run_collection())
+
+
+@collect.command("regulations")
+@click.option("--sector", "-s", help="Secteur spécifique (ex: fintech, tech)")
+@click.option("--all", "collect_all", is_flag=True, help="Collecter pour tous les secteurs actifs")
+def collect_regulations(sector: Optional[str], collect_all: bool) -> None:
+    """Collecte les textes réglementaires via Légifrance."""
+    from src.collectors import LegifranceCollector
+    from src.config import load_sectors
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_collection():
+        await db.init()
+        await db.create_tables()
+
+        async with LegifranceCollector() as collector:
+            async with db.session() as session:
+                if sector:
+                    result = await collector.collect_and_save(session, sector_id=sector)
+                    click.echo(f"Légifrance [{sector}]: {result.items_collected} textes trouvés, "
+                              f"{result.items_saved} nouveaux")
+                elif collect_all:
+                    result = await collector.collect_and_save(session)
+                    click.echo(f"Légifrance: {result.items_collected} textes analysés, "
+                              f"{result.items_saved} nouveaux sauvegardés")
+                else:
+                    # Afficher les secteurs disponibles
+                    sectors_config = load_sectors()
+                    click.echo("\nSecteurs disponibles:")
+                    for s in sectors_config.sectors:
+                        status = "actif" if s.actif else "inactif"
+                        click.echo(f"  - {s.id}: {s.nom} ({status})")
+                    click.echo("\nUtilisez --sector <id> ou --all")
+                    return
+
+                if not result.success:
+                    click.echo(f"Erreurs: {result.errors}")
+
+        await db.close()
+
+    logger.info("Démarrage de la collecte réglementaire")
+    asyncio.run(run_collection())
+
+
+@collect.command("all")
+def collect_all_sources() -> None:
+    """Collecte toutes les sources de données."""
+    from src.collectors import BodaccCollector, LegifranceCollector, PappersCollector
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_all():
+        await db.init()
+        await db.create_tables()
+
+        results = []
+
+        # Pappers (données légales)
+        click.echo("\n[1/3] Collecte des données légales (Pappers)...")
+        try:
+            async with PappersCollector() as collector:
+                async with db.session() as session:
+                    competitors_config = load_competitors()
+                    for comp in competitors_config.competitors:
+                        result = await collector.collect_with_details(comp.siren, session)
+                        results.append(("Pappers", comp.siren, result))
+        except Exception as e:
+            click.echo(f"  Erreur Pappers: {e}")
+
+        # BODACC
+        click.echo("\n[2/3] Collecte des annonces BODACC...")
+        try:
+            async with BodaccCollector() as collector:
+                async with db.session() as session:
+                    result = await collector.collect_and_save(session)
+                    results.append(("BODACC", "all", result))
+        except Exception as e:
+            click.echo(f"  Erreur BODACC: {e}")
+
+        # Légifrance
+        click.echo("\n[3/3] Collecte réglementaire (Légifrance)...")
+        try:
+            async with LegifranceCollector() as collector:
+                async with db.session() as session:
+                    result = await collector.collect_and_save(session)
+                    results.append(("Légifrance", "all", result))
+        except Exception as e:
+            click.echo(f"  Erreur Légifrance: {e}")
+
+        await db.close()
+
+        # Résumé
+        click.echo("\n" + "=" * 50)
+        click.echo("RÉSUMÉ DE LA COLLECTE")
+        click.echo("=" * 50)
+
+        total_collected = 0
+        total_saved = 0
+
+        for source, target, result in results:
+            status = "OK" if result.success else "ERREUR"
+            click.echo(f"{source} [{target}]: {result.items_saved} nouveaux ({status})")
+            total_collected += result.items_collected
+            total_saved += result.items_saved
+
+        click.echo("-" * 50)
+        click.echo(f"Total: {total_collected} analysés, {total_saved} sauvegardés")
+
+    logger.info("Démarrage de la collecte complète")
+    asyncio.run(run_all())
+
+
+@main.command("api")
+@click.option("--host", "-h", default=None, help="Hôte de l'API")
+@click.option("--port", "-p", default=None, type=int, help="Port de l'API")
+def api(host: Optional[str], port: Optional[int]) -> None:
+    """Démarre le serveur API."""
+    import uvicorn
+
+    settings = get_settings()
+    host = host or settings.api.host
+    port = port or settings.api.port
+
+    logger = get_logger("cli")
+    logger.info(f"Démarrage de l'API sur {host}:{port}")
+
+    click.echo(f"API StratWatch disponible sur http://{host}:{port}")
+    click.echo(f"Documentation: http://{host}:{port}/docs")
+
+    uvicorn.run(
+        "src.api.app:app",
+        host=host,
+        port=port,
+        reload=False,
+    )
+
+
+@main.command("dashboard")
+@click.option("--host", "-h", default=None, help="Hôte du dashboard")
+@click.option("--port", "-p", default=None, type=int, help="Port du dashboard")
+def dashboard(host: Optional[str], port: Optional[int]) -> None:
+    """Démarre le dashboard Streamlit."""
+    import subprocess
+
+    settings = get_settings()
+    host = host or settings.dashboard.host
+    port = port or settings.dashboard.port
+
+    logger = get_logger("cli")
+    logger.info(f"Démarrage du dashboard sur {host}:{port}")
+
+    click.echo(f"Dashboard StratWatch disponible sur http://{host}:{port}")
+
+    dashboard_path = PROJECT_ROOT / "src" / "dashboard" / "app.py"
+    subprocess.run([
+        sys.executable, "-m", "streamlit", "run",
+        str(dashboard_path),
+        "--server.address", host,
+        "--server.port", str(port),
+    ])
+
+
+@main.command("config")
+@click.option("--show", is_flag=True, help="Affiche la configuration actuelle")
+@click.option("--check", is_flag=True, help="Vérifie la configuration")
+def config(show: bool, check: bool) -> None:
+    """Gestion de la configuration."""
+    settings = get_settings()
+
+    if show:
+        click.echo("\n=== Configuration StratWatch ===\n")
+        click.echo(f"Environnement: {settings.app.environment}")
+        click.echo(f"Base de données: {settings.database.type}")
+        click.echo(f"API Pappers: {'configurée' if settings.pappers_api_key else 'non configurée'}")
+        click.echo(f"Telegram: {'activé' if settings.alerting.channels.telegram.enabled else 'désactivé'}")
+        click.echo(f"Email: {'activé' if settings.alerting.channels.email.enabled else 'désactivé'}")
+        click.echo("")
+
+        competitors = load_competitors()
+        click.echo(f"Concurrents surveillés: {len(competitors.competitors)}")
+
+    if check:
+        errors = []
+        warnings = []
+
+        if not settings.pappers_api_key:
+            errors.append("Clé API Pappers non configurée (PAPPERS_API_KEY)")
+
+        if settings.alerting.channels.telegram.enabled:
+            if not settings.telegram_bot_token:
+                warnings.append("Token Telegram non configuré")
+            if not settings.telegram_chat_id:
+                warnings.append("Chat ID Telegram non configuré")
+
+        competitors = load_competitors()
+        if not competitors.competitors:
+            warnings.append("Aucun concurrent configuré dans config/competitors.yaml")
+
+        if errors:
+            click.echo("\nErreurs:")
+            for err in errors:
+                click.echo(f"  - {err}")
+
+        if warnings:
+            click.echo("\nAvertissements:")
+            for warn in warnings:
+                click.echo(f"  - {warn}")
+
+        if not errors and not warnings:
+            click.echo("\nConfiguration OK")
+
+
+@main.group()
+def alerts() -> None:
+    """Commandes de gestion des alertes."""
+    pass
+
+
+@alerts.command("process")
+def alerts_process() -> None:
+    """Traite et envoie les alertes en attente."""
+    from src.alerting import NotificationDispatcher
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_process():
+        await db.init()
+        await db.create_tables()
+
+        async with db.session() as session:
+            dispatcher = NotificationDispatcher(session)
+            stats = await dispatcher.process_pending_alerts()
+
+            click.echo(f"\nAlertes traitées:")
+            click.echo(f"  Total: {stats['total']}")
+            click.echo(f"  Envoyées: {stats['sent']}")
+            click.echo(f"  Échouées: {stats['failed']}")
+
+        await db.close()
+
+    logger.info("Traitement des alertes")
+    asyncio.run(run_process())
+
+
+@alerts.command("check")
+def alerts_check() -> None:
+    """Exécute les vérifications et génère de nouvelles alertes."""
+    from src.alerting import AlertEngine
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_check():
+        await db.init()
+        await db.create_tables()
+
+        async with db.session() as session:
+            engine = AlertEngine(session)
+            alerts = await engine.run_all_checks()
+
+            click.echo(f"\n{len(alerts)} nouvelles alertes générées:")
+            for alert in alerts:
+                click.echo(f"  [{alert.severite}] {alert.titre}")
+
+        await db.close()
+
+    logger.info("Vérification des alertes")
+    asyncio.run(run_check())
+
+
+@alerts.command("list")
+@click.option("--unread", is_flag=True, help="Uniquement les non lues")
+@click.option("--limit", "-n", default=20, help="Nombre d'alertes à afficher")
+def alerts_list(unread: bool, limit: int) -> None:
+    """Liste les alertes récentes."""
+    from sqlalchemy import select
+    from src.storage import db
+    from src.storage.models import Alert
+
+    async def run_list():
+        await db.init()
+
+        async with db.session() as session:
+            query = select(Alert).order_by(Alert.created_at.desc()).limit(limit)
+            if unread:
+                query = query.where(Alert.read_at == None)
+
+            result = await session.execute(query)
+            alerts = result.scalars().all()
+
+            if not alerts:
+                click.echo("Aucune alerte trouvée.")
+                return
+
+            click.echo(f"\n{'='*60}")
+            click.echo(f"{'ALERTES RÉCENTES':^60}")
+            click.echo(f"{'='*60}\n")
+
+            for alert in alerts:
+                severity_icon = {"info": "ℹ️", "attention": "⚠️", "important": "🔶", "critique": "🚨"}
+                icon = severity_icon.get(alert.severite, "📌")
+                time_str = alert.created_at.strftime("%d/%m %H:%M")
+                read_mark = "" if alert.read_at else " *"
+
+                click.echo(f"{icon} [{time_str}] {alert.titre}{read_mark}")
+                click.echo(f"   {alert.message[:80]}...")
+                click.echo("")
+
+            click.echo(f"Total: {len(alerts)} alertes (* = non lue)")
+
+        await db.close()
+
+    asyncio.run(run_list())
+
+
+@alerts.command("digest")
+@click.option("--period", "-p", type=click.Choice(["daily", "weekly"]), default="daily")
+def alerts_digest(period: str) -> None:
+    """Envoie un résumé des alertes."""
+    from src.alerting import NotificationDispatcher
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_digest():
+        await db.init()
+
+        async with db.session() as session:
+            dispatcher = NotificationDispatcher(session)
+            success = await dispatcher.send_digest(period)
+
+            if success:
+                click.echo(f"Digest {period} envoyé avec succès")
+            else:
+                click.echo("Échec de l'envoi du digest")
+
+        await db.close()
+
+    logger.info(f"Envoi du digest {period}")
+    asyncio.run(run_digest())
+
+
+@alerts.command("test")
+def alerts_test() -> None:
+    """Teste les canaux de notification."""
+    from src.alerting import NotificationDispatcher
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_test():
+        await db.init()
+
+        async with db.session() as session:
+            dispatcher = NotificationDispatcher(session)
+            results = await dispatcher.test_channels()
+
+            click.echo("\nTest des canaux de notification:")
+            for channel, status in results.items():
+                if status is None:
+                    click.echo(f"  {channel}: désactivé")
+                elif status:
+                    click.echo(f"  {channel}: ✅ OK")
+                else:
+                    click.echo(f"  {channel}: ❌ Échec")
+
+        await db.close()
+
+    logger.info("Test des notifications")
+    asyncio.run(run_test())
+
+
+# =========================================================================
+# Commandes de rapport
+# =========================================================================
+
+@main.group()
+def report() -> None:
+    """Commandes de génération de rapports."""
+    pass
+
+
+@report.command("weekly")
+@click.option("--format", "-f", "output_format",
+              type=click.Choice(["html", "pdf", "markdown", "all"]),
+              default="html", help="Format de sortie")
+@click.option("--output", "-o", type=click.Path(), help="Fichier de sortie")
+def report_weekly(output_format: str, output: Optional[str]) -> None:
+    """Génère le rapport hebdomadaire."""
+    from src.reporting import ReportGenerator
+    from src.storage import db
+    from pathlib import Path
+
+    logger = get_logger("cli")
+
+    async def run_report():
+        await db.init()
+        await db.create_tables()
+
+        async with db.session() as session:
+            generator = ReportGenerator(session)
+
+            if output_format == "all":
+                formats = ["html", "pdf", "markdown"]
+            else:
+                formats = [output_format]
+
+            for fmt in formats:
+                try:
+                    output_path = Path(output) if output else None
+                    report_path = await generator.generate_weekly_report(
+                        output_format=fmt,
+                        output_path=output_path
+                    )
+                    click.echo(f"Rapport {fmt.upper()} généré: {report_path}")
+                except Exception as e:
+                    click.echo(f"Erreur génération {fmt}: {e}")
+
+        await db.close()
+
+    logger.info(f"Génération du rapport hebdomadaire ({output_format})")
+    asyncio.run(run_report())
+
+
+@report.command("competitor")
+@click.argument("siren")
+@click.option("--format", "-f", "output_format",
+              type=click.Choice(["html", "pdf"]),
+              default="html", help="Format de sortie")
+@click.option("--output", "-o", type=click.Path(), help="Fichier de sortie")
+def report_competitor(siren: str, output_format: str, output: Optional[str]) -> None:
+    """Génère le rapport d'un concurrent."""
+    from src.reporting import ReportGenerator
+    from src.storage import db
+    from pathlib import Path
+
+    logger = get_logger("cli")
+
+    async def run_report():
+        await db.init()
+        await db.create_tables()
+
+        async with db.session() as session:
+            generator = ReportGenerator(session)
+
+            try:
+                output_path = Path(output) if output else None
+                report_path = await generator.generate_competitor_report(
+                    siren=siren,
+                    output_format=output_format,
+                    output_path=output_path
+                )
+                click.echo(f"Rapport concurrent généré: {report_path}")
+            except ValueError as e:
+                click.echo(f"Erreur: {e}")
+            except Exception as e:
+                click.echo(f"Erreur génération: {e}")
+
+        await db.close()
+
+    logger.info(f"Génération du rapport concurrent {siren}")
+    asyncio.run(run_report())
+
+
+@report.command("list")
+@click.option("--limit", "-n", default=10, help="Nombre de rapports à afficher")
+def report_list(limit: int) -> None:
+    """Liste les rapports générés."""
+    from pathlib import Path
+
+    settings = get_settings()
+    reports_dir = settings.get_data_dir() / "reports"
+
+    if not reports_dir.exists():
+        click.echo("Aucun rapport généré.")
+        return
+
+    reports = sorted(reports_dir.glob("**/*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    reports = [r for r in reports if r.is_file()][:limit]
+
+    if not reports:
+        click.echo("Aucun rapport trouvé.")
+        return
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"{'RAPPORTS RÉCENTS':^60}")
+    click.echo(f"{'='*60}\n")
+
+    from datetime import datetime
+
+    for report in reports:
+        mtime = datetime.fromtimestamp(report.stat().st_mtime)
+        size_kb = report.stat().st_size / 1024
+        click.echo(f"  {report.name}")
+        click.echo(f"    Date: {mtime.strftime('%d/%m/%Y %H:%M')}")
+        click.echo(f"    Taille: {size_kb:.1f} KB")
+        click.echo(f"    Chemin: {report}")
+        click.echo("")
+
+
+# =========================================================================
+# Commandes du scheduler
+# =========================================================================
+
+@main.group()
+def scheduler() -> None:
+    """Commandes du planificateur de tâches."""
+    pass
+
+
+@scheduler.command("start")
+def scheduler_start() -> None:
+    """Démarre le scheduler en mode continu."""
+    from src.scheduler import run_scheduler
+
+    logger = get_logger("cli")
+    logger.info("Démarrage du scheduler StratWatch")
+
+    click.echo("Démarrage du scheduler StratWatch...")
+    click.echo("Appuyez sur Ctrl+C pour arrêter")
+
+    asyncio.run(run_scheduler())
+
+
+@scheduler.command("jobs")
+def scheduler_jobs() -> None:
+    """Liste les tâches planifiées."""
+    from src.scheduler import StratWatchScheduler
+
+    scheduler = StratWatchScheduler()
+    scheduler.configure_jobs()
+
+    jobs = scheduler.get_jobs()
+
+    click.echo(f"\n{'='*60}")
+    click.echo(f"{'TÂCHES PLANIFIÉES':^60}")
+    click.echo(f"{'='*60}\n")
+
+    for job in jobs:
+        click.echo(f"  {job['name']}")
+        click.echo(f"    ID: {job['id']}")
+        click.echo(f"    Trigger: {job['trigger']}")
+        click.echo(f"    Prochaine exécution: {job['next_run'] or 'N/A'}")
+        click.echo("")
+
+    click.echo(f"Total: {len(jobs)} tâches configurées")
+
+
+@scheduler.command("run")
+@click.argument("job_id")
+def scheduler_run(job_id: str) -> None:
+    """Exécute une tâche immédiatement."""
+    from src.scheduler import StratWatchScheduler
+
+    logger = get_logger("cli")
+
+    job_mapping = {
+        "collect_legal": "task_collect_legal",
+        "collect_bodacc": "task_collect_bodacc",
+        "collect_regulations": "task_collect_regulations",
+        "check_alerts": "task_check_alerts",
+        "send_notifications": "task_send_notifications",
+        "daily_digest": "task_send_daily_digest",
+        "weekly_digest": "task_send_weekly_digest",
+        "weekly_report": "task_generate_weekly_report",
+    }
+
+    if job_id not in job_mapping:
+        click.echo(f"Tâche inconnue: {job_id}")
+        click.echo(f"Tâches disponibles: {', '.join(job_mapping.keys())}")
+        return
+
+    scheduler = StratWatchScheduler()
+    task_method = getattr(scheduler, job_mapping[job_id])
+
+    logger.info(f"Exécution manuelle: {job_id}")
+    click.echo(f"Exécution de la tâche: {job_id}...")
+
+    asyncio.run(task_method())
+    click.echo("Tâche terminée.")
+
+
+@scheduler.command("status")
+def scheduler_status() -> None:
+    """Affiche l'état du scheduler."""
+    settings = get_settings()
+
+    click.echo("\n=== État du Scheduler ===\n")
+
+    # Configuration
+    reporting = settings.reporting
+    click.echo(f"Génération auto des rapports: {'Oui' if reporting.auto_generate else 'Non'}")
+    click.echo(f"Planning: {reporting.schedule}")
+    click.echo(f"Jour de la semaine: {reporting.day_of_week}")
+    click.echo(f"Heure: {reporting.hour}:00")
+    click.echo("")
+
+    # Intervalles de collecte
+    intervals = settings.collection.intervals
+    click.echo("Intervalles de collecte:")
+    click.echo(f"  - Données légales: 1x/jour (6h)")
+    click.echo(f"  - BODACC: 2x/jour (7h, 19h)")
+    click.echo(f"  - Réglementaire: 2x/jour (8h, 20h)")
+    click.echo(f"  - Vérification alertes: toutes les 30 min")
+    click.echo(f"  - Notifications: toutes les 15 min")
+
+
+if __name__ == "__main__":
+    main()

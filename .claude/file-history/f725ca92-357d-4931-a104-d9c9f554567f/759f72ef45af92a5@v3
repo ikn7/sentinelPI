@@ -1,0 +1,62 @@
+"""Tests for the Reddit collector."""
+
+from __future__ import annotations
+
+import json
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from src.collectors.reddit import RedditCollector
+from src.collectors.base import CollectedItem
+from src.storage.models import Source, SourceType
+
+
+@pytest.fixture
+def reddit_source():
+    """Create a test Reddit source."""
+    source = MagicMock(spec=Source)
+    source.id = "test-reddit-1"
+    source.name = "r/test"
+    source.url = "https://www.reddit.com/r/test"
+    source.type = SourceType.REDDIT
+    config = {"sort": "hot", "limit": 10}
+    source.config_json = json.dumps(config)
+    source.config = config
+    return source
+
+
+class TestRedditCollector:
+    def test_supports_source_type(self):
+        assert RedditCollector.supports_source_type() == SourceType.REDDIT
+
+    @pytest.mark.asyncio
+    async def test_collect_builds_correct_rss_url(self, reddit_source):
+        rss_xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+            <channel>
+                <title>r/test</title>
+                <item>
+                    <title>Test Post 1</title>
+                    <link>https://reddit.com/r/test/post1</link>
+                    <guid>t3_abc123</guid>
+                    <description>Test content</description>
+                </item>
+            </channel>
+        </rss>
+        """
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.text = rss_xml
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_response)
+
+        collector = RedditCollector(reddit_source, http_client=mock_http)
+        items = []
+        async for item in collector.collect():
+            items.append(item)
+
+        assert len(items) == 1
+        assert items[0].title == "Test Post 1"
+        assert "reddit" in (items[0].extra.get("platform", "") or "")

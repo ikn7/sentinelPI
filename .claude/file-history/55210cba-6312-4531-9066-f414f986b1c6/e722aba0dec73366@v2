@@ -1,0 +1,575 @@
+"""Modèles de données SQLAlchemy pour StratWatch."""
+
+import json
+import uuid
+from datetime import date, datetime
+from typing import List, Optional
+
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+)
+
+
+def generate_uuid() -> str:
+    """Génère un UUID sous forme de chaîne."""
+    return str(uuid.uuid4())
+
+
+class Base(DeclarativeBase):
+    """Classe de base pour tous les modèles."""
+
+    pass
+
+
+# =============================================================================
+# Modèles Concurrents
+# =============================================================================
+
+class Competitor(Base):
+    """Modèle représentant un concurrent surveillé."""
+
+    __tablename__ = "competitors"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    siren: Mapped[str] = mapped_column(String(9), unique=True, index=True, nullable=False)
+    siret_siege: Mapped[Optional[str]] = mapped_column(String(14))
+    nom: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    nom_commercial: Mapped[Optional[str]] = mapped_column(String(255))
+    forme_juridique: Mapped[Optional[str]] = mapped_column(String(100))
+    date_creation: Mapped[Optional[date]] = mapped_column(Date)
+    capital_social: Mapped[Optional[int]] = mapped_column(Integer)
+    code_naf: Mapped[Optional[str]] = mapped_column(String(6))
+    adresse_siege: Mapped[Optional[str]] = mapped_column(Text)
+    site_web: Mapped[Optional[str]] = mapped_column(String(255))
+    actif: Mapped[bool] = mapped_column(Boolean, default=True)
+    priorite: Mapped[int] = mapped_column(Integer, default=1)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now()
+    )
+
+    # Relations
+    dirigeants: Mapped[List["Dirigeant"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    financials: Mapped[List["Financial"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    job_offers: Mapped[List["JobOffer"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    funding_rounds: Mapped[List["FundingRound"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    patents: Mapped[List["Patent"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    trademarks: Mapped[List["Trademark"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    news_mentions: Mapped[List["NewsMention"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    press_releases: Mapped[List["PressRelease"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    alerts: Mapped[List["Alert"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+    bodacc_announcements: Mapped[List["BodaccAnnouncement"]] = relationship(
+        back_populates="competitor", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<Competitor(siren={self.siren}, nom={self.nom})>"
+
+
+class Dirigeant(Base):
+    """Modèle représentant un dirigeant d'entreprise."""
+
+    __tablename__ = "dirigeants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    nom: Mapped[str] = mapped_column(String(255), nullable=False)
+    prenom: Mapped[Optional[str]] = mapped_column(String(255))
+    fonction: Mapped[str] = mapped_column(String(255), nullable=False)
+    date_nomination: Mapped[Optional[date]] = mapped_column(Date)
+    date_fin: Mapped[Optional[date]] = mapped_column(Date)
+    actif: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="dirigeants")
+
+    __table_args__ = (
+        Index("ix_dirigeants_competitor_actif", "competitor_id", "actif"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Dirigeant(nom={self.nom}, fonction={self.fonction})>"
+
+
+class Financial(Base):
+    """Modèle représentant les données financières annuelles."""
+
+    __tablename__ = "financials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    annee: Mapped[int] = mapped_column(Integer, nullable=False)
+    chiffre_affaires: Mapped[Optional[int]] = mapped_column(Integer)
+    resultat_net: Mapped[Optional[int]] = mapped_column(Integer)
+    effectif: Mapped[Optional[int]] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="financials")
+
+    __table_args__ = (
+        Index("ix_financials_competitor_annee", "competitor_id", "annee"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Financial(annee={self.annee}, ca={self.chiffre_affaires})>"
+
+
+class JobOffer(Base):
+    """Modèle représentant une offre d'emploi."""
+
+    __tablename__ = "job_offers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    titre: Mapped[str] = mapped_column(String(255), nullable=False)
+    departement: Mapped[Optional[str]] = mapped_column(String(100))
+    lieu: Mapped[Optional[str]] = mapped_column(String(255))
+    type_contrat: Mapped[Optional[str]] = mapped_column(String(50))
+    date_publication: Mapped[Optional[date]] = mapped_column(Date)
+    date_detection: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    hash_content: Mapped[Optional[str]] = mapped_column(String(64))
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="job_offers")
+
+    __table_args__ = (
+        Index("ix_job_offers_competitor_active", "competitor_id", "active"),
+        Index("ix_job_offers_date_detection", "date_detection"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<JobOffer(titre={self.titre}, source={self.source})>"
+
+
+class FundingRound(Base):
+    """Modèle représentant une levée de fonds."""
+
+    __tablename__ = "funding_rounds"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    montant: Mapped[Optional[int]] = mapped_column(Integer)
+    devise: Mapped[str] = mapped_column(String(3), default="EUR")
+    serie: Mapped[Optional[str]] = mapped_column(String(50))
+    date: Mapped[Optional[date]] = mapped_column(Date)
+    investisseurs: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[Optional[str]] = mapped_column(Text)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="funding_rounds")
+
+    def get_investisseurs(self) -> list[str]:
+        """Retourne la liste des investisseurs."""
+        if self.investisseurs:
+            return json.loads(self.investisseurs)
+        return []
+
+    def set_investisseurs(self, investisseurs: list[str]) -> None:
+        """Définit la liste des investisseurs."""
+        self.investisseurs = json.dumps(investisseurs)
+
+    def __repr__(self) -> str:
+        return f"<FundingRound(montant={self.montant}, serie={self.serie})>"
+
+
+class Patent(Base):
+    """Modèle représentant un brevet."""
+
+    __tablename__ = "patents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    numero: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    titre: Mapped[str] = mapped_column(Text, nullable=False)
+    date_depot: Mapped[Optional[date]] = mapped_column(Date)
+    date_publication: Mapped[Optional[date]] = mapped_column(Date)
+    inventeurs: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    resume: Mapped[Optional[str]] = mapped_column(Text)
+    classifications: Mapped[Optional[str]] = mapped_column(Text)  # JSON array CPC/IPC
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[Optional[str]] = mapped_column(Text)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="patents")
+
+    __table_args__ = (Index("ix_patents_date_depot", "date_depot"),)
+
+    def __repr__(self) -> str:
+        return f"<Patent(numero={self.numero})>"
+
+
+class Trademark(Base):
+    """Modèle représentant une marque déposée."""
+
+    __tablename__ = "trademarks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    numero: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    denomination: Mapped[str] = mapped_column(String(255), nullable=False)
+    type: Mapped[str] = mapped_column(String(50), nullable=False)  # verbale, figurative, mixte
+    classes_nice: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    date_depot: Mapped[Optional[date]] = mapped_column(Date)
+    date_enregistrement: Mapped[Optional[date]] = mapped_column(Date)
+    statut: Mapped[str] = mapped_column(String(50), nullable=False)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[Optional[str]] = mapped_column(Text)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="trademarks")
+
+    def __repr__(self) -> str:
+        return f"<Trademark(denomination={self.denomination})>"
+
+
+class NewsMention(Base):
+    """Modèle représentant une mention dans la presse."""
+
+    __tablename__ = "news_mentions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    titre: Mapped[str] = mapped_column(Text, nullable=False)
+    media: Mapped[str] = mapped_column(String(255), nullable=False)
+    date_publication: Mapped[Optional[date]] = mapped_column(Date)
+    resume: Mapped[Optional[str]] = mapped_column(Text)
+    sentiment: Mapped[Optional[str]] = mapped_column(String(20))  # positif, neutre, negatif
+    score_sentiment: Mapped[Optional[float]] = mapped_column(Float)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    hash_content: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="news_mentions")
+
+    __table_args__ = (
+        Index("ix_news_mentions_competitor_date", "competitor_id", "date_publication"),
+        Index("ix_news_mentions_sentiment", "sentiment"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<NewsMention(titre={self.titre[:50]}...)>"
+
+
+class PressRelease(Base):
+    """Modèle représentant un communiqué de presse."""
+
+    __tablename__ = "press_releases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    titre: Mapped[str] = mapped_column(Text, nullable=False)
+    date_publication: Mapped[Optional[date]] = mapped_column(Date)
+    contenu: Mapped[Optional[str]] = mapped_column(Text)
+    resume: Mapped[Optional[str]] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    hash_content: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="press_releases")
+
+    def __repr__(self) -> str:
+        return f"<PressRelease(titre={self.titre[:50]}...)>"
+
+
+class BodaccAnnouncement(Base):
+    """Modèle représentant une annonce BODACC."""
+
+    __tablename__ = "bodacc_announcements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    competitor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("competitors.id"), nullable=False
+    )
+    numero_annonce: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    type_annonce: Mapped[str] = mapped_column(String(100), nullable=False)
+    categorie: Mapped[str] = mapped_column(String(50), nullable=False)  # creation, modification, radiation
+    date_publication: Mapped[date] = mapped_column(Date, nullable=False)
+    contenu: Mapped[str] = mapped_column(Text, nullable=False)
+    tribunal: Mapped[Optional[str]] = mapped_column(String(255))
+    url: Mapped[Optional[str]] = mapped_column(Text)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    competitor: Mapped["Competitor"] = relationship(back_populates="bodacc_announcements")
+
+    __table_args__ = (
+        Index("ix_bodacc_competitor_date", "competitor_id", "date_publication"),
+        Index("ix_bodacc_type", "type_annonce"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<BodaccAnnouncement(numero={self.numero_annonce}, type={self.type_annonce})>"
+
+
+# =============================================================================
+# Modèles Réglementation
+# =============================================================================
+
+class Regulation(Base):
+    """Modèle représentant un texte réglementaire."""
+
+    __tablename__ = "regulations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    numero: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    titre: Mapped[str] = mapped_column(Text, nullable=False)
+    titre_court: Mapped[Optional[str]] = mapped_column(String(255))
+    date_signature: Mapped[Optional[date]] = mapped_column(Date)
+    date_publication: Mapped[Optional[date]] = mapped_column(Date, index=True)
+    date_entree_vigueur: Mapped[Optional[date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    contenu_integral: Mapped[Optional[str]] = mapped_column(Text)
+    resume: Mapped[Optional[str]] = mapped_column(Text)
+    mots_cles: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    secteurs: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    hash_content: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    analyzed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    # Relations
+    impacts: Mapped[List["RegulationImpact"]] = relationship(
+        back_populates="regulation", cascade="all, delete-orphan"
+    )
+    echeances: Mapped[List["RegulationDeadline"]] = relationship(
+        back_populates="regulation", cascade="all, delete-orphan"
+    )
+    alerts: Mapped[List["Alert"]] = relationship(
+        back_populates="regulation", cascade="all, delete-orphan"
+    )
+
+    def get_mots_cles(self) -> list[str]:
+        """Retourne la liste des mots-clés."""
+        if self.mots_cles:
+            return json.loads(self.mots_cles)
+        return []
+
+    def set_mots_cles(self, mots_cles: list[str]) -> None:
+        """Définit la liste des mots-clés."""
+        self.mots_cles = json.dumps(mots_cles)
+
+    def get_secteurs(self) -> list[str]:
+        """Retourne la liste des secteurs."""
+        if self.secteurs:
+            return json.loads(self.secteurs)
+        return []
+
+    def set_secteurs(self, secteurs: list[str]) -> None:
+        """Définit la liste des secteurs."""
+        self.secteurs = json.dumps(secteurs)
+
+    def __repr__(self) -> str:
+        return f"<Regulation(type={self.type}, numero={self.numero})>"
+
+
+class RegulationImpact(Base):
+    """Modèle représentant un impact d'une réglementation."""
+
+    __tablename__ = "regulation_impacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    regulation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("regulations.id"), nullable=False
+    )
+    type_impact: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    entites_visees: Mapped[Optional[str]] = mapped_column(String(255))
+    seuils: Mapped[Optional[str]] = mapped_column(Text)
+    sanctions: Mapped[Optional[str]] = mapped_column(Text)
+    niveau_criticite: Mapped[int] = mapped_column(Integer, default=2)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    regulation: Mapped["Regulation"] = relationship(back_populates="impacts")
+
+    def __repr__(self) -> str:
+        return f"<RegulationImpact(type={self.type_impact})>"
+
+
+class RegulationDeadline(Base):
+    """Modèle représentant une échéance réglementaire."""
+
+    __tablename__ = "regulation_deadlines"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    regulation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("regulations.id"), nullable=False
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    date_echeance: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    obligatoire: Mapped[bool] = mapped_column(Boolean, default=True)
+    statut: Mapped[str] = mapped_column(String(20), default="a_venir")
+    rappel_envoye: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    regulation: Mapped["Regulation"] = relationship(back_populates="echeances")
+
+    __table_args__ = (Index("ix_deadlines_statut_date", "statut", "date_echeance"),)
+
+    def __repr__(self) -> str:
+        return f"<RegulationDeadline(date={self.date_echeance})>"
+
+
+class Sector(Base):
+    """Modèle représentant un secteur d'activité surveillé."""
+
+    __tablename__ = "sectors"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    nom: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    mots_cles: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    codes_naf: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    autorites: Mapped[Optional[str]] = mapped_column(Text)  # JSON array
+    actif: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<Sector(nom={self.nom})>"
+
+
+# =============================================================================
+# Modèle Alertes
+# =============================================================================
+
+class Alert(Base):
+    """Modèle représentant une alerte générée."""
+
+    __tablename__ = "alerts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    type: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
+    categorie: Mapped[str] = mapped_column(String(20), nullable=False)
+    severite: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    titre: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    competitor_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("competitors.id")
+    )
+    regulation_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("regulations.id")
+    )
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    data: Mapped[Optional[str]] = mapped_column(Text)  # JSON données complémentaires
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    competitor: Mapped[Optional["Competitor"]] = relationship(back_populates="alerts")
+    regulation: Mapped[Optional["Regulation"]] = relationship(back_populates="alerts")
+
+    __table_args__ = (
+        Index("ix_alerts_unread", "read_at", "created_at"),
+        Index("ix_alerts_unnotified", "notified", "created_at"),
+    )
+
+    def get_data(self) -> dict:
+        """Retourne les données complémentaires."""
+        if self.data:
+            return json.loads(self.data)
+        return {}
+
+    def set_data(self, data: dict) -> None:
+        """Définit les données complémentaires."""
+        self.data = json.dumps(data)
+
+    def __repr__(self) -> str:
+        return f"<Alert(type={self.type}, severite={self.severite})>"
+
+
+# =============================================================================
+# Constantes des types d'alertes
+# =============================================================================
+
+ALERT_TYPES = {
+    # Concurrentielles
+    "NOUVEAU_CONCURRENT": ("concurrent", "info"),
+    "RECRUTEMENT_MASSIF": ("concurrent", "attention"),
+    "POSTE_STRATEGIQUE": ("concurrent", "attention"),
+    "LEVEE_FONDS": ("concurrent", "important"),
+    "NOUVEAU_DIRIGEANT": ("concurrent", "attention"),
+    "DEPART_DIRIGEANT": ("concurrent", "attention"),
+    "PROCEDURE_COLLECTIVE": ("concurrent", "critique"),
+    "DEPOT_BREVET": ("concurrent", "attention"),
+    "DEPOT_MARQUE": ("concurrent", "info"),
+    "MENTION_PRESSE_NEGATIVE": ("concurrent", "attention"),
+    "EXPANSION": ("concurrent", "attention"),
+    "CHANGEMENT_CAPITAL": ("concurrent", "info"),
+    "NOUVELLE_FILIALE": ("concurrent", "attention"),
+
+    # Réglementaires
+    "NOUVELLE_LOI": ("reglementaire", "attention"),
+    "NOUVEAU_DECRET": ("reglementaire", "attention"),
+    "NOUVELLE_NORME": ("reglementaire", "info"),
+    "ECHEANCE_PROCHE": ("reglementaire", "important"),
+    "ECHEANCE_IMMINENTE": ("reglementaire", "critique"),
+    "MODIFICATION_TEXTE": ("reglementaire", "attention"),
+    "SANCTION_SECTEUR": ("reglementaire", "important"),
+
+    # Croisées
+    "IMPACT_CONCURRENT_REGLEMENTATION": ("croisee", "important"),
+    "OPPORTUNITE_REGLEMENTAIRE": ("croisee", "attention"),
+    "RISQUE_SECTORIEL": ("croisee", "important"),
+}
+
+
+SEVERITY_ORDER = {
+    "info": 0,
+    "attention": 1,
+    "important": 2,
+    "critique": 3,
+}

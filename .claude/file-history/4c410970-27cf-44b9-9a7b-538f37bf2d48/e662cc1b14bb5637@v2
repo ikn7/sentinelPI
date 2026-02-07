@@ -1,0 +1,40 @@
+#!/bin/bash
+# Post-removal script for SentinelPi
+
+set -e
+
+case "$1" in
+    purge)
+        echo "==> Suppression complète de SentinelPi..."
+
+        # Supprimer sentinelctl
+        rm -f /usr/local/bin/sentinelctl
+
+        # Supprimer les données et config
+        rm -rf /etc/sentinelpi
+        rm -rf /var/lib/sentinelpi
+        rm -rf /var/log/sentinelpi
+        rm -rf /var/backups/sentinelpi
+
+        # Supprimer l'utilisateur
+        if id sentinelpi &>/dev/null; then
+            userdel sentinelpi 2>/dev/null || true
+        fi
+
+        echo "    Données supprimées."
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        # Ne rien faire, garder les données
+        ;;
+
+    *)
+        echo "postrm appelé avec argument inconnu: $1" >&2
+        exit 1
+        ;;
+esac
+
+# Recharger systemd
+systemctl daemon-reload 2>/dev/null || true
+
+exit 0

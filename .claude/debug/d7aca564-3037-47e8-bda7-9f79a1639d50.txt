@@ -1,0 +1,57 @@
+2026-02-04T19:05:53.079Z [DEBUG] [init] configureGlobalMTLS starting
+2026-02-04T19:05:53.081Z [DEBUG] [init] configureGlobalMTLS complete
+2026-02-04T19:05:53.081Z [DEBUG] [init] configureGlobalAgents starting
+2026-02-04T19:05:53.081Z [DEBUG] [init] configureGlobalAgents complete
+2026-02-04T19:05:53.101Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-02-04T19:05:53.121Z [DEBUG] [ToolSearch:optimistic] mode=tst-auto, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-02-04T19:05:53.124Z [DEBUG] [STARTUP] Running setup()...
+2026-02-04T19:05:53.126Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-02-04T19:05:53.149Z [DEBUG] Loading skills from: managed=/etc/claude-code/.claude/skills, user=/home/user/.claude/skills, project=[]
+2026-02-04T19:05:53.153Z [DEBUG] Passes: Cache stale, returning cached data and refreshing in background
+2026-02-04T19:05:53.155Z [DEBUG] Error log sink initialized
+2026-02-04T19:05:53.162Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-02-04T19:05:53.162Z [DEBUG] Total plugin skills loaded: 0
+2026-02-04T19:05:53.162Z [DEBUG] Total plugin commands loaded: 0
+2026-02-04T19:05:53.163Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-02-04T19:05:53.169Z [DEBUG] [STARTUP] setup() completed in 45ms
+2026-02-04T19:05:53.169Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-02-04T19:05:53.202Z [DEBUG] Total plugin agents loaded: 0
+2026-02-04T19:05:53.202Z [DEBUG] Loaded 0 unique skills (managed: 0, user: 0, project: 0, legacy commands: 0)
+2026-02-04T19:05:53.205Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 1 bundled skills
+2026-02-04T19:05:53.213Z [DEBUG] [STARTUP] Commands and agents loaded in 44ms
+2026-02-04T19:05:53.214Z [DEBUG] [STARTUP] Running showSetupScreens()...
+2026-02-04T19:05:53.238Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-02-04T19:05:53.243Z [DEBUG] Grove: Cache stale, returning cached data and refreshing in background
+2026-02-04T19:05:53.249Z [DEBUG] [render] initLayout starting
+2026-02-04T19:05:53.250Z [DEBUG] Layout engine: yoga
+2026-02-04T19:05:53.270Z [DEBUG] Acquired PID lock for 2.1.29 (PID 85125)
+2026-02-04T19:05:53.270Z [DEBUG] Acquired PID lock on running version: /home/user/.local/share/claude/versions/2.1.29
+2026-02-04T19:05:53.288Z [DEBUG] [render] initLayout complete
+2026-02-04T19:05:53.300Z [DEBUG] [render] first ink render: 1942ms since process start
+2026-02-04T19:05:53.416Z [DEBUG] Failed to fetch and cache passes eligibility
+2026-02-04T19:05:53.416Z [ERROR] AxiosError: Error
+    at ej (/$bunfs/root/claude:41:1143)
+    at <anonymous> (/$bunfs/root/claude:46:10080)
+    at emit (node:events:92:22)
+    at endReadableNT (internal:streams/readable:862:50)
+    at processTicksAndRejections (native:7:39)
+    at request (/$bunfs/root/claude:48:2147)
+    at processTicksAndRejections (native:7:39)
+2026-02-04T19:05:53.432Z [DEBUG] [keybindings] KeybindingSetup initialized with 99 bindings, 0 warnings
+2026-02-04T19:05:53.466Z [DEBUG] Git remote URL: null
+2026-02-04T19:05:53.466Z [DEBUG] No git remote URL found
+2026-02-04T19:05:53.466Z [DEBUG] Not in a GitHub repository, skipping path mapping update
+2026-02-04T19:05:53.470Z [DEBUG] [Claude in Chrome] Extension not found in any browser
+2026-02-04T19:05:53.500Z [DEBUG] [keybindings] Watching for changes to /home/user/.claude/keybindings.json
+2026-02-04T19:05:54.536Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.85125.1770231954536
+2026-02-04T19:05:54.537Z [DEBUG] Preserving file permissions: 100600
+2026-02-04T19:05:54.547Z [DEBUG] Temp file written successfully, size: 5895 bytes
+2026-02-04T19:05:54.547Z [DEBUG] Applied original permissions to temp file
+2026-02-04T19:05:54.547Z [DEBUG] Renaming /home/user/.claude.json.tmp.85125.1770231954536 to /home/user/.claude.json
+2026-02-04T19:05:54.547Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-04T19:05:54.838Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.85125.1770231954838
+2026-02-04T19:05:54.838Z [DEBUG] Preserving file permissions: 100600
+2026-02-04T19:05:54.845Z [DEBUG] Temp file written successfully, size: 5895 bytes
+2026-02-04T19:05:54.845Z [DEBUG] Applied original permissions to temp file
+2026-02-04T19:05:54.845Z [DEBUG] Renaming /home/user/.claude.json.tmp.85125.1770231954838 to /home/user/.claude.json
+2026-02-04T19:05:54.845Z [DEBUG] File /home/user/.claude.json written atomically

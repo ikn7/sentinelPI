@@ -1,0 +1,162 @@
+"""Interface de base de données avec SQLAlchemy async."""
+
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional
+
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from src.config import get_settings
+from src.storage.models import Base
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+class Database:
+    """Gestionnaire de connexion à la base de données.
+
+    Utilise le pattern singleton pour garantir une seule instance
+    du moteur de base de données.
+    """
+
+    _instance: Optional["Database"] = None
+    _engine: Optional[AsyncEngine] = None
+    _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+
+    def __new__(cls) -> "Database":
+        """Crée une instance unique de Database."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    async def init(self, database_url: Optional[str] = None) -> None:
+        """Initialise la connexion à la base de données.
+
+        Args:
+            database_url: URL de connexion. Si non fournie, utilise la configuration.
+        """
+        if self._engine is not None:
+            logger.debug("Base de données déjà initialisée")
+            return
+
+        if database_url is None:
+            settings = get_settings()
+            database_url = settings.get_database_url()
+
+        logger.info(f"Initialisation de la base de données: {database_url.split('@')[-1]}")
+
+        self._engine = create_async_engine(
+            database_url,
+            echo=False,
+            pool_pre_ping=True,
+        )
+
+        self._session_factory = async_sessionmaker(
+            self._engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+    async def create_tables(self) -> None:
+        """Crée toutes les tables définies dans les modèles."""
+        if self._engine is None:
+            raise RuntimeError("Base de données non initialisée")
+
+        logger.info("Création des tables...")
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Tables créées avec succès")
+
+    async def drop_tables(self) -> None:
+        """Supprime toutes les tables."""
+        if self._engine is None:
+            raise RuntimeError("Base de données non initialisée")
+
+        logger.warning("Suppression de toutes les tables...")
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        logger.info("Tables supprimées")
+
+    @asynccontextmanager
+    async def session(self) -> AsyncGenerator[AsyncSession, None]:
+        """Fournit une session de base de données avec gestion automatique.
+
+        Yields:
+            Session SQLAlchemy async.
+
+        Raises:
+            RuntimeError: Si la base de données n'est pas initialisée.
+
+        Example:
+            async with db.session() as session:
+                result = await session.execute(select(Competitor))
+        """
+        if self._session_factory is None:
+            raise RuntimeError("Base de données non initialisée")
+
+        session = self._session_factory()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    async def close(self) -> None:
+        """Ferme la connexion à la base de données."""
+        if self._engine is not None:
+            logger.info("Fermeture de la connexion à la base de données")
+            await self._engine.dispose()
+            self._engine = None
+            self._session_factory = None
+
+    @property
+    def engine(self) -> Optional[AsyncEngine]:
+        """Retourne le moteur SQLAlchemy."""
+        return self._engine
+
+    @property
+    def is_initialized(self) -> bool:
+        """Vérifie si la base de données est initialisée."""
+        return self._engine is not None
+
+
+# Instance globale
+db = Database()
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """Dépendance FastAPI pour obtenir une session.
+
+    Yields:
+        Session SQLAlchemy async.
+
+    Example:
+        @app.get("/competitors")
+        async def list_competitors(session: AsyncSession = Depends(get_db)):
+            ...
+    """
+    async with db.session() as session:
+        yield session
+
+
+async def init_database(database_url: Optional[str] = None) -> None:
+    """Initialise la base de données et crée les tables.
+
+    Args:
+        database_url: URL de connexion optionnelle.
+    """
+    await db.init(database_url)
+    await db.create_tables()
+
+
+async def close_database() -> None:
+    """Ferme la connexion à la base de données."""
+    await db.close()

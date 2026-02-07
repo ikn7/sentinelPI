@@ -1,0 +1,45 @@
+# SentinelPi - Dependencies
+# Generated from pyproject.toml
+# Install with: pip install -r requirements.txt
+
+# Core
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+pyyaml>=6.0.1
+
+# Database
+sqlalchemy>=2.0.23
+aiosqlite>=0.19.0
+
+# HTTP & Async
+httpx>=0.25.2
+tenacity>=8.2.3
+aiofiles>=23.2.1
+curl_cffi>=0.6.0
+
+# RSS & Parsing
+feedparser>=6.0.10
+beautifulsoup4>=4.12.2
+lxml>=4.9.3
+python-dateutil>=2.8.2
+
+# Scheduler
+apscheduler>=3.10.4
+
+# Dashboard
+streamlit>=1.29.0
+plotly>=5.18.0
+
+# Alerting
+python-telegram-bot>=20.7
+
+# Reporting
+jinja2>=3.1.2
+weasyprint>=60.1
+
+# Logging
+loguru>=0.7.2
+
+# Utils
+python-dotenv>=1.0.0
+diskcache>=5.6.3

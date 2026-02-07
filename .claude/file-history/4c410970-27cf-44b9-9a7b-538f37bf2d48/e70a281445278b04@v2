@@ -1,0 +1,93 @@
+#!/bin/bash
+# Post-installation script for SentinelPi
+
+set -e
+
+INSTALL_DIR="/opt/sentinelpi"
+CONFIG_DIR="/etc/sentinelpi"
+DATA_DIR="/var/lib/sentinelpi"
+LOG_DIR="/var/log/sentinelpi"
+USER="sentinelpi"
+GROUP="sentinelpi"
+
+echo "==> Configuration de SentinelPi..."
+
+# Créer l'utilisateur système si nécessaire
+if ! id "$USER" &>/dev/null; then
+    echo "    Création de l'utilisateur $USER..."
+    useradd --system --no-create-home --shell /bin/false "$USER"
+fi
+
+# Créer les répertoires
+echo "    Création des répertoires..."
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+
+# Copier la configuration par défaut si elle n'existe pas
+if [ ! -f "$CONFIG_DIR/settings.yaml" ]; then
+    cp "$INSTALL_DIR/config/settings.yaml" "$CONFIG_DIR/"
+fi
+if [ ! -f "$CONFIG_DIR/sources.yaml" ]; then
+    cp "$INSTALL_DIR/config/sources.yaml" "$CONFIG_DIR/"
+fi
+if [ ! -f "$CONFIG_DIR/filters.yaml" ]; then
+    cp "$INSTALL_DIR/config/filters.yaml" "$CONFIG_DIR/"
+fi
+if [ ! -f "$CONFIG_DIR/alerts.yaml" ]; then
+    cp "$INSTALL_DIR/config/alerts.yaml" "$CONFIG_DIR/"
+fi
+if [ ! -f "$CONFIG_DIR/.env" ]; then
+    cp "$INSTALL_DIR/.env.example" "$CONFIG_DIR/.env"
+    echo "    IMPORTANT: Configurez /etc/sentinelpi/.env avec vos tokens"
+fi
+
+# Créer les liens symboliques vers la config
+ln -sf "$CONFIG_DIR/settings.yaml" "$INSTALL_DIR/config/settings.yaml"
+ln -sf "$CONFIG_DIR/sources.yaml" "$INSTALL_DIR/config/sources.yaml"
+ln -sf "$CONFIG_DIR/filters.yaml" "$INSTALL_DIR/config/filters.yaml"
+ln -sf "$CONFIG_DIR/alerts.yaml" "$INSTALL_DIR/config/alerts.yaml"
+ln -sf "$CONFIG_DIR/.env" "$INSTALL_DIR/.env"
+
+# Liens pour les données
+ln -sf "$DATA_DIR" "$INSTALL_DIR/data"
+ln -sf "$LOG_DIR" "$INSTALL_DIR/logs"
+
+# Permissions
+echo "    Configuration des permissions..."
+chown -R "$USER:$GROUP" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+chmod 750 "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+chmod 640 "$CONFIG_DIR"/*.yaml "$CONFIG_DIR/.env" 2>/dev/null || true
+
+# Créer l'environnement virtuel si nécessaire
+if [ ! -d "$INSTALL_DIR/venv" ]; then
+    echo "    Création de l'environnement Python..."
+    python3 -m venv "$INSTALL_DIR/venv"
+    "$INSTALL_DIR/venv/bin/pip" install --upgrade pip
+    "$INSTALL_DIR/venv/bin/pip" install -e "$INSTALL_DIR"
+fi
+
+chown -R "$USER:$GROUP" "$INSTALL_DIR"
+
+# Installer sentinelctl dans le PATH
+echo "    Installation de sentinelctl..."
+cp "$INSTALL_DIR/scripts/sentinelctl" /usr/local/bin/sentinelctl
+chmod +x /usr/local/bin/sentinelctl
+
+# Recharger systemd
+echo "    Configuration de systemd..."
+systemctl daemon-reload
+
+echo ""
+echo "==> Installation terminée!"
+echo ""
+echo "    Configuration: /etc/sentinelpi/"
+echo "    Données:       /var/lib/sentinelpi/"
+echo "    Logs:          /var/log/sentinelpi/"
+echo ""
+echo "    Prochaines étapes:"
+echo "    1. Configurez vos tokens: sudo nano /etc/sentinelpi/.env"
+echo "    2. Ajoutez vos sources:   sudo nano /etc/sentinelpi/sources.yaml"
+echo "    3. Démarrez le service:   sudo systemctl enable --now sentinelpi"
+echo "    4. Démarrez le dashboard: sudo systemctl enable --now sentinelpi-dashboard"
+echo ""
+
+exit 0

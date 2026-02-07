@@ -1,0 +1,944 @@
+"""
+SentinelPi Dashboard - Main Streamlit application.
+
+Provides a web interface for monitoring and managing the watch station.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta
+
+import streamlit as st
+
+from src.utils.config import get_settings
+from src.utils.logging import create_logger, setup_logging
+
+log = create_logger("dashboard.app")
+
+
+def run_async(coro):
+    """Run an async coroutine from sync context."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
+async def add_source_to_db(source):
+    """Add a source to the database."""
+    from src.storage.database import get_session
+    async with get_session() as session:
+        session.add(source)
+        await session.commit()
+
+
+async def sync_sources_from_yaml():
+    """Sync sources from YAML config to database."""
+    import hashlib
+    from src.storage.database import get_session, init_database
+    from src.storage.models import Source, SourceType
+    from src.utils.config import load_sources_config
+    from sqlalchemy import select
+
+    # Ensure database is initialized
+    await init_database()
+
+    sources_config = load_sources_config()
+    sources_list = sources_config.get("sources", [])
+
+    async with get_session() as session:
+        for config in sources_list:
+            # Generate deterministic ID from name + URL
+            source_key = f"{config.get('name', '')}:{config.get('url', '')}"
+            source_id = hashlib.sha256(source_key.encode()).hexdigest()[:32]
+
+            # Check if exists
+            result = await session.execute(
+                select(Source).where(Source.id == source_id)
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # Update
+                existing.name = config.get("name", existing.name)
+                existing.url = config.get("url", existing.url)
+                existing.enabled = config.get("enabled", True)
+                existing.interval_minutes = config.get("interval_minutes", 60)
+                existing.priority = config.get("priority", 2)
+                existing.category = config.get("category")
+                existing.tags = config.get("tags", [])
+                existing.config = config.get("config", {})
+            else:
+                # Create
+                source = Source()
+                source.id = source_id
+                source.name = config.get("name", "Unnamed")
+                source.type = SourceType(config.get("type", "rss"))
+                source.url = config.get("url", "")
+                source.enabled = config.get("enabled", True)
+                source.interval_minutes = config.get("interval_minutes", 60)
+                source.priority = config.get("priority", 2)
+                source.category = config.get("category")
+                source.tags = config.get("tags", [])
+                source.config = config.get("config", {})
+                session.add(source)
+
+        await session.commit()
+
+    return len(sources_list)
+
+
+async def sync_filters_from_yaml():
+    """Sync filters from YAML config to database."""
+    import hashlib
+    from src.storage.database import get_session, init_database
+    from src.storage.models import Filter, FilterAction
+    from src.utils.config import load_filters_config
+    from sqlalchemy import select
+
+    # Ensure database is initialized
+    await init_database()
+
+    filters_config = load_filters_config()
+    filters_list = filters_config.get("filters", [])
+
+    async with get_session() as session:
+        for config in filters_list:
+            # Generate deterministic ID from name
+            filter_name = config.get("name", "")
+            filter_id = hashlib.sha256(filter_name.encode()).hexdigest()[:32]
+
+            # Check if exists
+            result = await session.execute(
+                select(Filter).where(Filter.id == filter_id)
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # Update
+                existing.name = config.get("name", existing.name)
+                existing.description = config.get("description")
+                existing.action = FilterAction(config.get("action", "include"))
+                existing.action_params = config.get("action_params", {})
+                existing.conditions = config.get("conditions", {})
+                existing.score_modifier = config.get("score_modifier", 0)
+                existing.priority = config.get("priority", 100)
+                existing.enabled = config.get("enabled", True)
+            else:
+                # Create
+                filter_obj = Filter()
+                filter_obj.id = filter_id
+                filter_obj.name = config.get("name", "Unnamed")
+                filter_obj.description = config.get("description")
+                filter_obj.action = FilterAction(config.get("action", "include"))
+                filter_obj.action_params = config.get("action_params", {})
+                filter_obj.conditions = config.get("conditions", {})
+                filter_obj.score_modifier = config.get("score_modifier", 0)
+                filter_obj.priority = config.get("priority", 100)
+                filter_obj.enabled = config.get("enabled", True)
+                session.add(filter_obj)
+
+        await session.commit()
+
+    return len(filters_list)
+
+
+async def get_all_sources():
+    """Get all sources from the database."""
+    from src.storage.database import get_session
+    from src.storage.models import Source
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        result = await session.execute(select(Source).order_by(Source.name))
+        return result.scalars().all()
+
+
+async def get_all_filters():
+    """Get all filters from the database."""
+    from src.storage.database import get_session
+    from src.storage.models import Filter
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        result = await session.execute(select(Filter).order_by(Filter.priority))
+        return result.scalars().all()
+
+
+async def get_all_alerts(severity_filter=None, date_filter=None, limit=50):
+    """Get alerts from the database."""
+    from src.storage.database import get_session
+    from src.storage.models import Alert, AlertSeverity
+    from sqlalchemy import select, and_
+    from datetime import datetime, timedelta, timezone
+
+    async with get_session() as session:
+        query = select(Alert).order_by(Alert.created_at.desc()).limit(limit)
+
+        conditions = []
+
+        if severity_filter and severity_filter != "all":
+            conditions.append(Alert.severity == AlertSeverity(severity_filter))
+
+        if date_filter:
+            now = datetime.now(timezone.utc)
+            if date_filter == "today":
+                cutoff = now - timedelta(days=1)
+            elif date_filter == "week":
+                cutoff = now - timedelta(days=7)
+            elif date_filter == "month":
+                cutoff = now - timedelta(days=30)
+            else:
+                cutoff = None
+
+            if cutoff:
+                conditions.append(Alert.created_at >= cutoff)
+
+        if conditions:
+            query = query.where(and_(*conditions))
+
+        result = await session.execute(query)
+        return result.scalars().all()
+
+
+async def get_stats(period="week"):
+    """Get statistics for the dashboard."""
+    from src.storage.database import get_session
+    from src.storage.models import Item, Alert, Source
+    from sqlalchemy import select, func
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    if period == "week":
+        cutoff = now - timedelta(days=7)
+    elif period == "month":
+        cutoff = now - timedelta(days=30)
+    elif period == "quarter":
+        cutoff = now - timedelta(days=90)
+    else:
+        cutoff = now - timedelta(days=365)
+
+    async with get_session() as session:
+        # Items count
+        result = await session.execute(
+            select(func.count(Item.id)).where(Item.collected_at >= cutoff)
+        )
+        items_count = result.scalar() or 0
+
+        # Alerts count
+        result = await session.execute(
+            select(func.count(Alert.id)).where(Alert.created_at >= cutoff)
+        )
+        alerts_count = result.scalar() or 0
+
+        # Active sources
+        result = await session.execute(
+            select(func.count(Source.id)).where(Source.enabled == True)
+        )
+        sources_count = result.scalar() or 0
+
+        # Top items
+        result = await session.execute(
+            select(Item)
+            .where(Item.collected_at >= cutoff)
+            .order_by(Item.relevance_score.desc())
+            .limit(10)
+        )
+        top_items = result.scalars().all()
+
+        # Items by source
+        result = await session.execute(
+            select(Source.name, func.count(Item.id).label("count"))
+            .join(Item, Item.source_id == Source.id)
+            .where(Item.collected_at >= cutoff)
+            .group_by(Source.id)
+            .order_by(func.count(Item.id).desc())
+            .limit(10)
+        )
+        items_by_source = result.all()
+
+        return {
+            "items_count": items_count,
+            "alerts_count": alerts_count,
+            "sources_count": sources_count,
+            "top_items": top_items,
+            "items_by_source": items_by_source,
+        }
+
+
+async def get_feed_items(search=None, category=None, date_filter=None, limit=50):
+    """Get items for the feed page."""
+    from src.storage.database import get_session
+    from src.storage.models import Item, Source
+    from sqlalchemy import select, and_
+    from datetime import datetime, timedelta, timezone
+
+    async with get_session() as session:
+        # Build query
+        query = select(Item).order_by(Item.collected_at.desc()).limit(limit)
+
+        conditions = []
+
+        # Date filter
+        if date_filter:
+            now = datetime.now(timezone.utc)
+            if date_filter == "today":
+                cutoff = now - timedelta(days=1)
+            elif date_filter == "week":
+                cutoff = now - timedelta(days=7)
+            elif date_filter == "month":
+                cutoff = now - timedelta(days=30)
+            else:
+                cutoff = None
+
+            if cutoff:
+                conditions.append(Item.collected_at >= cutoff)
+
+        # Search filter
+        if search:
+            search_pattern = f"%{search}%"
+            conditions.append(
+                (Item.title.ilike(search_pattern)) |
+                (Item.content.ilike(search_pattern))
+            )
+
+        if conditions:
+            query = query.where(and_(*conditions))
+
+        result = await session.execute(query)
+        items = result.scalars().all()
+
+        # Get sources dict
+        source_ids = set(item.source_id for item in items)
+        sources_dict = {}
+        if source_ids:
+            result = await session.execute(
+                select(Source).where(Source.id.in_(source_ids))
+            )
+            for source in result.scalars().all():
+                sources_dict[source.id] = source
+
+        return items, sources_dict
+
+# Page configuration
+st.set_page_config(
+    page_title="SentinelPi",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+def init_session_state() -> None:
+    """Initialize session state variables."""
+    if "initialized" not in st.session_state:
+        st.session_state.initialized = True
+        st.session_state.current_page = "feed"
+        st.session_state.selected_source = None
+        st.session_state.selected_category = "all"
+        st.session_state.search_query = ""
+        st.session_state.date_filter = "all"
+        st.session_state.status_filter = "all"
+
+        # Sync sources and filters from YAML to database on first load
+        try:
+            sources_count = run_async(sync_sources_from_yaml())
+            log.info(f"Synced {sources_count} sources from YAML to database")
+        except Exception as e:
+            log.error(f"Failed to sync sources: {e}")
+
+        try:
+            filters_count = run_async(sync_filters_from_yaml())
+            log.info(f"Synced {filters_count} filters from YAML to database")
+        except Exception as e:
+            log.error(f"Failed to sync filters: {e}")
+
+
+def render_sidebar() -> str:
+    """Render the sidebar navigation."""
+    with st.sidebar:
+        st.markdown("### 🛡️ SentinelPi")
+        st.success("● En ligne", icon="✅")
+
+        st.divider()
+
+        # Navigation
+        page = st.radio(
+            "Navigation",
+            options=["feed", "sources", "filters", "alerts", "stats", "settings"],
+            format_func=lambda x: {
+                "feed": "📰 Flux",
+                "sources": "📡 Sources",
+                "filters": "🎯 Filtres",
+                "alerts": "🔔 Alertes",
+                "stats": "📊 Stats",
+                "settings": "⚙️ Config",
+            }.get(x, x),
+            label_visibility="collapsed",
+        )
+
+        st.divider()
+
+        # Compact quick stats
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.caption("**Src**")
+            st.caption("--")
+        with col2:
+            st.caption("**Items**")
+            st.caption("--")
+        with col3:
+            st.caption("**Alertes**")
+            st.caption("--")
+        with col4:
+            st.caption("**NonLu**")
+            st.caption("--")
+
+        settings = get_settings()
+        st.caption(f"v{settings.app.version}")
+
+        return page
+
+
+def render_feed_page() -> None:
+    """Render the main feed page."""
+    st.header("📰 Flux d'actualités")
+
+    # Filters row
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+
+    with col1:
+        search = st.text_input(
+            "🔍 Rechercher",
+            placeholder="Mots-clés...",
+            label_visibility="collapsed",
+        )
+
+    with col2:
+        category = st.selectbox(
+            "Catégorie",
+            options=["all", "presse", "tech", "social", "concurrents"],
+            format_func=lambda x: "Toutes catégories" if x == "all" else x.capitalize(),
+            label_visibility="collapsed",
+        )
+
+    with col3:
+        date_filter = st.selectbox(
+            "Période",
+            options=["all", "today", "week", "month"],
+            format_func=lambda x: {
+                "all": "Toutes dates",
+                "today": "Aujourd'hui",
+                "week": "Cette semaine",
+                "month": "Ce mois",
+            }.get(x, x),
+            label_visibility="collapsed",
+        )
+
+    with col4:
+        if st.button("🔄 Actualiser", use_container_width=True):
+            st.rerun()
+
+    st.divider()
+
+    # Load items from database
+    items, sources_dict = run_async(get_feed_items(
+        search=search if search else None,
+        category=category if category != "all" else None,
+        date_filter=date_filter if date_filter != "all" else None,
+    ))
+
+    if items:
+        st.caption(f"{len(items)} items")
+        from src.dashboard.components.feed import render_feed
+        render_feed(items, sources_dict)
+    else:
+        st.info("📭 Aucun item à afficher.", icon="ℹ️")
+        with st.expander("💡 Comment démarrer", expanded=True):
+            st.markdown("""
+            1. **Ajoutez des sources** dans l'onglet 📡 Sources
+            2. **Configurez des filtres** dans l'onglet 🎯 Filtres
+            3. **Lancez la collecte** avec la commande `sentinelpi`
+            4. Les nouveaux articles apparaîtront ici automatiquement
+            """)
+
+
+def render_sources_page() -> None:
+    """Render the sources management page."""
+    st.header("📡 Gestion des sources")
+
+    # Load sources from database
+    sources = run_async(get_all_sources())
+
+    # Action buttons
+    col1, col2, col3 = st.columns([1, 1, 4])
+    with col1:
+        if st.button("➕ Ajouter", use_container_width=True):
+            st.session_state.show_add_source = True
+    with col2:
+        if st.button("🔄 Rafraîchir", use_container_width=True):
+            st.rerun()
+
+    # Add source form (above table)
+    if st.session_state.get("show_add_source"):
+        with st.form("add_source_form"):
+            st.subheader("Ajouter une source")
+
+            source_type = st.selectbox(
+                "Type",
+                options=["rss", "web", "reddit", "mastodon", "youtube"],
+            )
+
+            name = st.text_input("Nom", placeholder="Ma nouvelle source")
+            url = st.text_input("URL", placeholder="https://...")
+            category = st.text_input("Catégorie", placeholder="tech, presse, etc.")
+            interval = st.number_input("Intervalle (minutes)", min_value=5, value=60)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.form_submit_button("💾 Enregistrer", use_container_width=True):
+                    if name and url:
+                        try:
+                            import hashlib
+                            from src.storage.models import Source, SourceType
+
+                            source_key = f"{name}:{url}"
+                            source_id = hashlib.sha256(source_key.encode()).hexdigest()[:32]
+
+                            new_source = Source()
+                            new_source.id = source_id
+                            new_source.name = name
+                            new_source.type = SourceType(source_type)
+                            new_source.url = url
+                            new_source.category = category if category else None
+                            new_source.interval_minutes = interval
+                            new_source.enabled = True
+                            new_source.priority = 2
+                            new_source.config = {}
+
+                            run_async(add_source_to_db(new_source))
+                            st.success(f"Source '{name}' ajoutée !")
+                            st.session_state.show_add_source = False
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erreur: {e}")
+                    else:
+                        st.warning("Nom et URL requis")
+            with col2:
+                if st.form_submit_button("❌ Annuler", use_container_width=True):
+                    st.session_state.show_add_source = False
+
+    st.divider()
+
+    if sources:
+        from src.dashboard.components.sources import (
+            get_source_type_icon, get_status_badge,
+            _run_async as _src_async, _toggle_source, _test_source,
+        )
+
+        # Table header
+        h_icon, h_name, h_url, h_int, h_cat, h_status, h_last, h_tog, h_test = st.columns(
+            [0.4, 1.8, 2.5, 0.6, 0.8, 1, 0.9, 0.7, 0.7]
+        )
+        with h_icon:
+            st.caption("**Type**")
+        with h_name:
+            st.caption("**Nom**")
+        with h_url:
+            st.caption("**URL**")
+        with h_int:
+            st.caption("**Interv.**")
+        with h_cat:
+            st.caption("**Cat.**")
+        with h_status:
+            st.caption("**Statut**")
+        with h_last:
+            st.caption("**Check**")
+        with h_tog:
+            st.caption("**On/Off**")
+        with h_test:
+            st.caption("**Test**")
+
+        # Render each source as a compact row with inline actions
+        for s in sources:
+            stype = s.type.value if hasattr(s.type, "value") else s.type
+            icon = get_source_type_icon(stype)
+            status = get_status_badge(s)
+            last = "-"
+            if s.last_check:
+                from src.utils.dates import format_relative
+                last = format_relative(s.last_check) if hasattr(s.last_check, "timestamp") else str(s.last_check)
+
+            c_icon, c_name, c_url, c_int, c_cat, c_status, c_last, c_tog, c_test = st.columns(
+                [0.4, 1.8, 2.5, 0.6, 0.8, 1, 0.9, 0.7, 0.7]
+            )
+            with c_icon:
+                st.markdown(icon)
+            with c_name:
+                st.markdown(f"**{s.name}**")
+            with c_url:
+                short_url = s.url[:45] + "..." if len(s.url) > 45 else s.url
+                st.caption(short_url)
+            with c_int:
+                st.caption(f"{s.interval_minutes} min")
+            with c_cat:
+                st.caption(s.category or "-")
+            with c_status:
+                st.caption(status)
+            with c_last:
+                st.caption(last)
+            with c_tog:
+                label = "▶️" if not s.enabled else "⏸️"
+                if st.button(label, key=f"tog_{s.id}", help="Activer/Pause"):
+                    _src_async(_toggle_source(s.id, s.enabled))
+                    st.rerun()
+            with c_test:
+                if st.button("🔄", key=f"tst_{s.id}", help="Tester"):
+                    with st.spinner("..."):
+                        success, msg = _src_async(_test_source(s.id))
+                        if success:
+                            st.toast(f"OK: {msg}")
+                        else:
+                            st.error(msg)
+    else:
+        st.info("Aucune source configuree.")
+
+
+def render_filters_page() -> None:
+    """Render the filters configuration page."""
+    st.header("🎯 Configuration des filtres")
+
+    # Load filters from database
+    filters = run_async(get_all_filters())
+
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        if st.button("➕ Nouveau filtre", use_container_width=True):
+            st.session_state.show_add_filter = True
+
+    st.divider()
+
+    if filters:
+        from src.dashboard.components.filters import (
+            get_action_badge, _format_conditions_summary,
+            _run_async as _flt_async, _toggle_filter, _delete_filter,
+        )
+
+        # Table header
+        h_st, h_name, h_act, h_cond, h_score, h_pri, h_tog, h_del = st.columns(
+            [0.3, 2, 1.2, 3, 0.6, 0.5, 0.5, 0.5]
+        )
+        with h_st:
+            st.caption("**On**")
+        with h_name:
+            st.caption("**Nom**")
+        with h_act:
+            st.caption("**Action**")
+        with h_cond:
+            st.caption("**Conditions**")
+        with h_score:
+            st.caption("**Score**")
+        with h_pri:
+            st.caption("**Prio**")
+        with h_tog:
+            st.caption("**On/Off**")
+        with h_del:
+            st.caption("**Suppr**")
+
+        for f in filters:
+            action_val = f.action.value if hasattr(f.action, "value") else f.action
+            badge = get_action_badge(action_val)
+            cond_summary = _format_conditions_summary(f.conditions or {})
+            score_str = f"{f.score_modifier:+}" if f.score_modifier else "0"
+            status_icon = "✅" if f.enabled else "⏸️"
+
+            c_st, c_name, c_act, c_cond, c_score, c_pri, c_tog, c_del = st.columns(
+                [0.3, 2, 1.2, 3, 0.6, 0.5, 0.5, 0.5]
+            )
+            with c_st:
+                st.markdown(status_icon)
+            with c_name:
+                st.markdown(f"**{f.name}**")
+                if f.description:
+                    st.caption(f.description[:60])
+            with c_act:
+                st.caption(badge)
+            with c_cond:
+                if cond_summary:
+                    st.caption(cond_summary[:80])
+            with c_score:
+                st.caption(score_str)
+            with c_pri:
+                st.caption(str(f.priority))
+            with c_tog:
+                label = "▶️" if not f.enabled else "⏸️"
+                if st.button(label, key=f"ftog_{f.id}", help="Activer/Pause"):
+                    _flt_async(_toggle_filter(f.id, f.enabled))
+                    st.rerun()
+            with c_del:
+                if st.button("🗑", key=f"fdel_{f.id}", help="Supprimer"):
+                    _flt_async(_delete_filter(f.id))
+                    st.rerun()
+    else:
+        st.info("Aucun filtre configure.")
+
+
+def render_alerts_page() -> None:
+    """Render the alerts history page."""
+    st.header("🔔 Historique des alertes")
+
+    # Filters
+    col1, col2, col3 = st.columns([2, 2, 2])
+
+    with col1:
+        severity = st.selectbox(
+            "Sévérité",
+            options=["all", "critical", "warning", "notice", "info"],
+            format_func=lambda x: {
+                "all": "Toutes",
+                "critical": "🚨 Critique",
+                "warning": "⚠️ Attention",
+                "notice": "📢 Notice",
+                "info": "ℹ️ Info",
+            }.get(x, x),
+        )
+
+    with col2:
+        date_range = st.selectbox(
+            "Période",
+            options=["today", "week", "month", "all"],
+            format_func=lambda x: {
+                "today": "Aujourd'hui",
+                "week": "Cette semaine",
+                "month": "Ce mois",
+                "all": "Tout",
+            }.get(x, x),
+        )
+
+    with col3:
+        if st.button("🔄 Actualiser", use_container_width=True):
+            st.rerun()
+
+    st.divider()
+
+    # Load alerts
+    alerts = run_async(get_all_alerts(
+        severity_filter=severity if severity != "all" else None,
+        date_filter=date_range if date_range != "all" else None,
+    ))
+
+    if alerts:
+        st.caption(f"{len(alerts)} alertes")
+        from src.dashboard.components.alerts import render_alert_card
+        for alert in alerts:
+            render_alert_card(alert, show_actions=True)
+    else:
+        st.info("📭 Aucune alerte enregistrée.", icon="ℹ️")
+
+
+def render_stats_page() -> None:
+    """Render the statistics page."""
+    st.header("📊 Statistiques")
+
+    # Time period selector
+    period = st.selectbox(
+        "Période",
+        options=["week", "month", "quarter", "year"],
+        format_func=lambda x: {
+            "week": "7 derniers jours",
+            "month": "30 derniers jours",
+            "quarter": "3 derniers mois",
+            "year": "12 derniers mois",
+        }.get(x, x),
+    )
+
+    st.divider()
+
+    # Load stats
+    stats = run_async(get_stats(period))
+
+    # Metrics row
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "Items collectés",
+            stats["items_count"],
+            help="Total des items collectés sur la période",
+        )
+
+    with col2:
+        st.metric(
+            "Alertes déclenchées",
+            stats["alerts_count"],
+            help="Alertes envoyées sur la période",
+        )
+
+    with col3:
+        st.metric(
+            "Sources actives",
+            stats["sources_count"],
+            help="Sources activées",
+        )
+
+    with col4:
+        avg_score = 0
+        if stats["top_items"]:
+            avg_score = sum(i.relevance_score for i in stats["top_items"]) / len(stats["top_items"])
+        st.metric(
+            "Score moyen",
+            f"{avg_score:.0f}",
+            help="Score moyen des top items",
+        )
+
+    st.divider()
+
+    # Charts
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("📊 Répartition par source")
+        if stats["items_by_source"]:
+            import pandas as pd
+            df = pd.DataFrame(stats["items_by_source"], columns=["Source", "Items"])
+            st.bar_chart(df.set_index("Source"))
+        else:
+            st.info("Pas assez de données.")
+
+    with col2:
+        st.subheader("🏆 Top 10 items (par score)")
+        if stats["top_items"]:
+            for i, item in enumerate(stats["top_items"][:10], 1):
+                score_color = "🟢" if item.relevance_score > 70 else "🟡" if item.relevance_score > 40 else "⚪"
+                title = item.title[:50] + "..." if len(item.title) > 50 else item.title
+                st.markdown(f"{i}. {score_color} **{item.relevance_score:.0f}** - {title}")
+        else:
+            st.info("Aucun item à afficher.")
+
+
+def render_settings_page() -> None:
+    """Render the settings page."""
+    st.header("⚙️ Paramètres")
+
+    settings = get_settings()
+
+    tabs = st.tabs(["🔧 Général", "📡 Collecte", "🔔 Alertes", "🗄️ Base de données"])
+
+    with tabs[0]:  # General
+        st.subheader("Configuration générale")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text_input("Nom de l'application", value=settings.app.name, disabled=True)
+            st.text_input("Version", value=settings.app.version, disabled=True)
+
+        with col2:
+            st.text_input("Fuseau horaire", value=settings.app.timezone, disabled=True)
+            st.text_input("Niveau de log", value=settings.logging.level, disabled=True)
+
+        st.caption("💡 Modifiez ces paramètres dans `config/settings.yaml`")
+
+    with tabs[1]:  # Collection
+        st.subheader("Paramètres de collecte")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.number_input(
+                "Intervalle par défaut (min)",
+                value=settings.collection.default_interval_minutes,
+                disabled=True,
+            )
+            st.number_input(
+                "Collecteurs simultanés",
+                value=settings.collection.max_concurrent_collectors,
+                disabled=True,
+            )
+
+        with col2:
+            st.number_input(
+                "Items max par source",
+                value=settings.collection.max_items_per_source,
+                disabled=True,
+            )
+            st.number_input(
+                "Fenêtre dédup (jours)",
+                value=settings.collection.dedup_window_days,
+                disabled=True,
+            )
+
+    with tabs[2]:  # Alerts
+        st.subheader("Configuration des alertes")
+
+        st.markdown("**Canaux configurés:**")
+
+        telegram_status = "✅ Configuré" if settings.telegram_bot_token else "❌ Non configuré"
+        email_status = "✅ Configuré" if settings.email_user else "❌ Non configuré"
+        webhook_status = "✅ Configuré" if settings.webhook_url else "❌ Non configuré"
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.info(f"📱 Telegram: {telegram_status}")
+        with col2:
+            st.info(f"📧 Email: {email_status}")
+        with col3:
+            st.info(f"🔗 Webhook: {webhook_status}")
+
+        st.caption("💡 Configurez les tokens dans le fichier `.env`")
+
+    with tabs[3]:  # Database
+        st.subheader("Base de données")
+
+        st.text_input("Chemin", value=settings.database.path, disabled=True)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📊 Statistiques DB"):
+                st.info("Fonctionnalité à venir")
+        with col2:
+            if st.button("🗑️ Nettoyer"):
+                st.warning("Cette action supprimera les anciens items.")
+
+
+def main() -> None:
+    """Main entry point for the dashboard."""
+    # Initialize
+    setup_logging()
+    init_session_state()
+
+    # Custom CSS
+    st.markdown("""
+    <style>
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .stDataFrame {
+        font-size: 14px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Render sidebar and get selected page
+    page = render_sidebar()
+
+    # Render selected page
+    if page == "feed":
+        render_feed_page()
+    elif page == "sources":
+        render_sources_page()
+    elif page == "filters":
+        render_filters_page()
+    elif page == "alerts":
+        render_alerts_page()
+    elif page == "stats":
+        render_stats_page()
+    elif page == "settings":
+        render_settings_page()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,461 @@
+"""Notifications Email pour StratWatch.
+
+Envoie les alertes par email via SMTP.
+"""
+
+import asyncio
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Optional
+
+import aiosmtplib
+
+from src.config import get_settings
+from src.storage.models import Alert, SEVERITY_ORDER
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+# Couleurs HTML par sévérité
+SEVERITY_COLORS = {
+    "info": "#3498db",
+    "attention": "#f39c12",
+    "important": "#e67e22",
+    "critique": "#e74c3c",
+}
+
+# Icônes HTML par catégorie
+CATEGORY_ICONS = {
+    "concurrent": "🏢",
+    "reglementaire": "📜",
+    "croisee": "🔗",
+}
+
+
+class EmailNotifier:
+    """Gestionnaire de notifications Email.
+
+    Envoie des alertes formatées par email via SMTP.
+
+    Example:
+        notifier = EmailNotifier()
+        await notifier.send_alert(alert)
+    """
+
+    def __init__(
+        self,
+        smtp_host: Optional[str] = None,
+        smtp_port: Optional[int] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        from_address: Optional[str] = None,
+        to_addresses: Optional[list[str]] = None,
+    ) -> None:
+        """Initialise le notifier Email.
+
+        Args:
+            smtp_host: Serveur SMTP.
+            smtp_port: Port SMTP.
+            username: Nom d'utilisateur SMTP.
+            password: Mot de passe SMTP.
+            from_address: Adresse d'expédition.
+            to_addresses: Adresses de destination.
+        """
+        settings = get_settings()
+        email_config = settings.alerting.channels.email
+
+        self._smtp_host = smtp_host or email_config.smtp_host
+        self._smtp_port = smtp_port or email_config.smtp_port
+        self._username = username or email_config.username
+        self._password = password or email_config.password
+        self._from_address = from_address or email_config.from_address
+        self._to_addresses = to_addresses or email_config.to_addresses
+        self._enabled = email_config.enabled
+        self._min_severity = email_config.min_severity
+        self._logger = get_logger("alerting.email")
+
+    def _check_config(self) -> bool:
+        """Vérifie que la configuration est complète.
+
+        Returns:
+            True si configuré, False sinon.
+        """
+        if not self._enabled:
+            self._logger.debug("Notifications Email désactivées")
+            return False
+
+        if not self._smtp_host:
+            self._logger.warning("Serveur SMTP non configuré")
+            return False
+
+        if not self._from_address:
+            self._logger.warning("Adresse d'expédition non configurée")
+            return False
+
+        if not self._to_addresses:
+            self._logger.warning("Adresses de destination non configurées")
+            return False
+
+        return True
+
+    def _should_send(self, alert: Alert) -> bool:
+        """Vérifie si l'alerte doit être envoyée.
+
+        Args:
+            alert: Alerte à vérifier.
+
+        Returns:
+            True si l'alerte doit être envoyée.
+        """
+        min_level = SEVERITY_ORDER.get(self._min_severity, 0)
+        alert_level = SEVERITY_ORDER.get(alert.severite, 0)
+        return alert_level >= min_level
+
+    def _format_alert_html(self, alert: Alert) -> str:
+        """Formate une alerte en HTML.
+
+        Args:
+            alert: Alerte à formater.
+
+        Returns:
+            Contenu HTML.
+        """
+        color = SEVERITY_COLORS.get(alert.severite, "#333")
+        icon = CATEGORY_ICONS.get(alert.categorie, "📋")
+        time_str = alert.created_at.strftime("%d/%m/%Y à %H:%M")
+
+        source_link = ""
+        if alert.source_url:
+            source_link = f'<p><a href="{alert.source_url}" style="color: {color};">Voir la source →</a></p>'
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }}
+                .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                .header {{ background: {color}; color: white; padding: 20px; }}
+                .header h1 {{ margin: 0; font-size: 18px; }}
+                .badge {{ display: inline-block; background: rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 4px; font-size: 12px; margin-top: 8px; }}
+                .content {{ padding: 20px; }}
+                .message {{ color: #333; line-height: 1.6; }}
+                .meta {{ margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee; color: #666; font-size: 14px; }}
+                .footer {{ background: #f9f9f9; padding: 15px 20px; font-size: 12px; color: #999; }}
+                a {{ text-decoration: none; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>{alert.titre}</h1>
+                    <span class="badge">{alert.severite.upper()}</span>
+                </div>
+                <div class="content">
+                    <div class="message">
+                        {alert.message.replace(chr(10), '<br>')}
+                    </div>
+                    {source_link}
+                    <div class="meta">
+                        <p>{icon} {alert.categorie.capitalize()} • {time_str}</p>
+                    </div>
+                </div>
+                <div class="footer">
+                    <p>StratWatch - Veille stratégique</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        return html
+
+    def _format_alert_text(self, alert: Alert) -> str:
+        """Formate une alerte en texte brut.
+
+        Args:
+            alert: Alerte à formater.
+
+        Returns:
+            Contenu texte.
+        """
+        time_str = alert.created_at.strftime("%d/%m/%Y à %H:%M")
+
+        lines = [
+            f"[{alert.severite.upper()}] {alert.titre}",
+            "",
+            alert.message,
+            "",
+            f"Catégorie: {alert.categorie}",
+            f"Date: {time_str}",
+        ]
+
+        if alert.source_url:
+            lines.append(f"Source: {alert.source_url}")
+
+        lines.extend(["", "---", "StratWatch - Veille stratégique"])
+
+        return "\n".join(lines)
+
+    async def send_alert(self, alert: Alert) -> bool:
+        """Envoie une alerte par email.
+
+        Args:
+            alert: Alerte à envoyer.
+
+        Returns:
+            True si envoyé avec succès.
+        """
+        if not self._check_config():
+            return False
+
+        if not self._should_send(alert):
+            self._logger.debug(f"Alerte ignorée (sévérité {alert.severite})")
+            return False
+
+        try:
+            # Créer le message
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"[StratWatch] [{alert.severite.upper()}] {alert.titre}"
+            msg["From"] = self._from_address
+            msg["To"] = ", ".join(self._to_addresses)
+
+            # Ajouter les versions texte et HTML
+            text_content = self._format_alert_text(alert)
+            html_content = self._format_alert_html(alert)
+
+            msg.attach(MIMEText(text_content, "plain", "utf-8"))
+            msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+            # Envoyer
+            await aiosmtplib.send(
+                msg,
+                hostname=self._smtp_host,
+                port=self._smtp_port,
+                username=self._username,
+                password=self._password,
+                start_tls=True,
+            )
+
+            self._logger.info(f"Email envoyé: {alert.titre}")
+            return True
+
+        except Exception as e:
+            self._logger.error(f"Erreur envoi email: {e}")
+            return False
+
+    async def send_alerts_batch(self, alerts: list[Alert]) -> tuple[int, int]:
+        """Envoie un lot d'alertes.
+
+        Args:
+            alerts: Liste des alertes.
+
+        Returns:
+            Tuple (envoyées, échouées).
+        """
+        if not self._check_config():
+            return (0, len(alerts))
+
+        sent = 0
+        failed = 0
+
+        for alert in alerts:
+            success = await self.send_alert(alert)
+            if success:
+                sent += 1
+            else:
+                failed += 1
+
+            # Pause entre les envois
+            await asyncio.sleep(0.5)
+
+        self._logger.info(f"Lot envoyé: {sent} succès, {failed} échecs")
+        return (sent, failed)
+
+    async def send_digest(
+        self,
+        alerts: list[Alert],
+        title: str = "Résumé quotidien StratWatch",
+    ) -> bool:
+        """Envoie un digest HTML des alertes.
+
+        Args:
+            alerts: Liste des alertes.
+            title: Titre du digest.
+
+        Returns:
+            True si envoyé avec succès.
+        """
+        if not self._check_config():
+            return False
+
+        if not alerts:
+            return True
+
+        # Grouper par sévérité
+        by_severity = {"critique": [], "important": [], "attention": [], "info": []}
+        for alert in alerts:
+            if alert.severite in by_severity:
+                by_severity[alert.severite].append(alert)
+
+        # Construire le HTML
+        now = datetime.now().strftime("%d/%m/%Y")
+
+        sections_html = []
+        for severity, severity_alerts in by_severity.items():
+            if not severity_alerts:
+                continue
+
+            color = SEVERITY_COLORS.get(severity, "#333")
+            items = []
+
+            for alert in severity_alerts:
+                link = f'<a href="{alert.source_url}">' if alert.source_url else ""
+                link_end = "</a>" if alert.source_url else ""
+                items.append(f"""
+                    <li style="margin-bottom: 10px;">
+                        {link}<strong>{alert.titre}</strong>{link_end}
+                        <br><span style="color: #666; font-size: 13px;">{alert.message[:100]}...</span>
+                    </li>
+                """)
+
+            sections_html.append(f"""
+                <div style="margin-bottom: 20px;">
+                    <h3 style="color: {color}; border-bottom: 2px solid {color}; padding-bottom: 5px;">
+                        {severity.upper()} ({len(severity_alerts)})
+                    </h3>
+                    <ul style="list-style: none; padding-left: 0;">
+                        {"".join(items)}
+                    </ul>
+                </div>
+            """)
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }}
+                .container {{ max-width: 700px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                .header {{ background: #2c3e50; color: white; padding: 30px 20px; text-align: center; }}
+                .header h1 {{ margin: 0 0 10px 0; }}
+                .header p {{ margin: 0; opacity: 0.8; }}
+                .content {{ padding: 30px; }}
+                .stats {{ background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-around; text-align: center; }}
+                .stat-item h2 {{ margin: 0; font-size: 28px; }}
+                .stat-item p {{ margin: 5px 0 0 0; color: #666; font-size: 14px; }}
+                .footer {{ background: #f9f9f9; padding: 20px; text-align: center; font-size: 12px; color: #999; }}
+                a {{ color: #3498db; text-decoration: none; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📊 {title}</h1>
+                    <p>{now}</p>
+                </div>
+                <div class="content">
+                    <div class="stats">
+                        <div class="stat-item">
+                            <h2>{len(alerts)}</h2>
+                            <p>Alertes totales</p>
+                        </div>
+                        <div class="stat-item" style="color: #e74c3c;">
+                            <h2>{len(by_severity['critique'])}</h2>
+                            <p>Critiques</p>
+                        </div>
+                        <div class="stat-item" style="color: #e67e22;">
+                            <h2>{len(by_severity['important'])}</h2>
+                            <p>Importantes</p>
+                        </div>
+                    </div>
+                    {"".join(sections_html)}
+                </div>
+                <div class="footer">
+                    <p>StratWatch - Plateforme de veille stratégique</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        # Version texte
+        text_lines = [title, "=" * len(title), "", f"Date: {now}", f"Total: {len(alerts)} alertes", ""]
+        for severity, severity_alerts in by_severity.items():
+            if severity_alerts:
+                text_lines.append(f"\n{severity.upper()} ({len(severity_alerts)})")
+                for alert in severity_alerts:
+                    text_lines.append(f"  - {alert.titre}")
+
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"[StratWatch] {title} - {now}"
+            msg["From"] = self._from_address
+            msg["To"] = ", ".join(self._to_addresses)
+
+            msg.attach(MIMEText("\n".join(text_lines), "plain", "utf-8"))
+            msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+            await aiosmtplib.send(
+                msg,
+                hostname=self._smtp_host,
+                port=self._smtp_port,
+                username=self._username,
+                password=self._password,
+                start_tls=True,
+            )
+
+            self._logger.info(f"Digest envoyé: {len(alerts)} alertes")
+            return True
+
+        except Exception as e:
+            self._logger.error(f"Erreur envoi digest: {e}")
+            return False
+
+    async def send_test_email(self) -> bool:
+        """Envoie un email de test.
+
+        Returns:
+            True si envoyé avec succès.
+        """
+        if not self._check_config():
+            return False
+
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = "[StratWatch] Test de connexion"
+            msg["From"] = self._from_address
+            msg["To"] = ", ".join(self._to_addresses)
+
+            text = "Test de connexion StratWatch réussi!"
+            html = """
+            <html>
+            <body style="font-family: sans-serif; padding: 20px;">
+                <h2 style="color: #27ae60;">✅ Test réussi!</h2>
+                <p>La connexion email StratWatch fonctionne correctement.</p>
+            </body>
+            </html>
+            """
+
+            msg.attach(MIMEText(text, "plain", "utf-8"))
+            msg.attach(MIMEText(html, "html", "utf-8"))
+
+            await aiosmtplib.send(
+                msg,
+                hostname=self._smtp_host,
+                port=self._smtp_port,
+                username=self._username,
+                password=self._password,
+                start_tls=True,
+            )
+
+            self._logger.info("Email de test envoyé")
+            return True
+
+        except Exception as e:
+            self._logger.error(f"Erreur test email: {e}")
+            return False

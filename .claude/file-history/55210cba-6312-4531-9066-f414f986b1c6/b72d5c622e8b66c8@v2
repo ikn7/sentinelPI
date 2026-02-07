@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --secondary: #3498db;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #e74c3c;
+            --light: #ecf0f1;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 25px;
+            border-radius: 10px;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 5px;
+        }
+
+        .header .siren {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .header .generated {
+            font-size: 0.85em;
+            opacity: 0.7;
+            margin-top: 10px;
+        }
+
+        /* Info Cards */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .info-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .info-card .label {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .info-card .value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        .info-card .trend {
+            font-size: 0.85em;
+            margin-top: 5px;
+        }
+
+        .info-card .trend.up { color: var(--success); }
+        .info-card .trend.down { color: var(--danger); }
+        .info-card .trend.stable { color: #666; }
+
+        /* Sections */
+        .section {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .section h2 {
+            color: var(--primary);
+            border-bottom: 2px solid var(--secondary);
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            font-size: 1.3em;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        th {
+            background: var(--light);
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        tr:hover {
+            background: #f9f9f9;
+        }
+
+        /* Dirigeants */
+        .dirigeant-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .dirigeant-item:last-child {
+            border-bottom: none;
+        }
+
+        .dirigeant-name {
+            font-weight: 600;
+        }
+
+        .dirigeant-role {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        /* Timeline */
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 10px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--light);
+        }
+
+        .timeline-item {
+            position: relative;
+            padding-bottom: 20px;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -24px;
+            top: 5px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--secondary);
+        }
+
+        .timeline-item.alert::before {
+            background: var(--danger);
+        }
+
+        .timeline-date {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .timeline-content {
+            background: #f9f9f9;
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-primary { background: var(--primary); color: white; }
+        .badge-success { background: var(--success); color: white; }
+        .badge-warning { background: var(--warning); color: white; }
+        .badge-danger { background: var(--danger); color: white; }
+
+        /* Charts placeholder */
+        .chart-placeholder {
+            background: var(--light);
+            padding: 40px;
+            text-align: center;
+            border-radius: 8px;
+            color: #666;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            font-size: 0.85em;
+        }
+
+        /* Links */
+        a {
+            color: var(--secondary);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        /* Print */
+        @media print {
+            body { background: white; }
+            .container { max-width: 100%; }
+            .section { break-inside: avoid; }
+        }
+
+        @page {
+            size: A4;
+            margin: 1.5cm;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>{{ competitor.nom }}</h1>
+            <div class="siren">SIREN: {{ competitor.siren }}</div>
+            <div class="generated">
+                Rapport généré le {{ generated_at|format_date('%d/%m/%Y à %H:%M') }}
+            </div>
+        </header>
+
+        <!-- Key Metrics -->
+        <div class="info-grid">
+            <div class="info-card">
+                <div class="label">Chiffre d'affaires</div>
+                <div class="value">{{ competitor.last_ca|format_currency if competitor.last_ca else 'N/A' }}</div>
+                {% if competitor.ca_trend %}
+                <div class="trend {{ competitor.ca_trend }}">
+                    {% if competitor.ca_trend == 'up' %}↑{% elif competitor.ca_trend == 'down' %}↓{% else %}→{% endif %}
+                    {{ competitor.ca_variation|default('') }}
+                </div>
+                {% endif %}
+            </div>
+            <div class="info-card">
+                <div class="label">Effectif</div>
+                <div class="value">{{ competitor.last_effectif or 'N/A' }}</div>
+                {% if competitor.effectif_trend %}
+                <div class="trend {{ competitor.effectif_trend }}">
+                    {% if competitor.effectif_trend == 'up' %}↑{% elif competitor.effectif_trend == 'down' %}↓{% else %}→{% endif %}
+                    {{ competitor.effectif_variation|default('') }}
+                </div>
+                {% endif %}
+            </div>
+            <div class="info-card">
+                <div class="label">Forme juridique</div>
+                <div class="value">{{ competitor.forme_juridique or 'N/A' }}</div>
+            </div>
+            <div class="info-card">
+                <div class="label">Date de création</div>
+                <div class="value">{{ competitor.date_creation|format_date if competitor.date_creation else 'N/A' }}</div>
+            </div>
+        </div>
+
+        <!-- Company Info -->
+        <section class="section">
+            <h2>Informations générales</h2>
+            <table>
+                <tr>
+                    <td><strong>Raison sociale</strong></td>
+                    <td>{{ competitor.nom }}</td>
+                </tr>
+                <tr>
+                    <td><strong>SIREN</strong></td>
+                    <td>{{ competitor.siren }}</td>
+                </tr>
+                {% if competitor.siret %}
+                <tr>
+                    <td><strong>SIRET (siège)</strong></td>
+                    <td>{{ competitor.siret }}</td>
+                </tr>
+                {% endif %}
+                {% if competitor.adresse %}
+                <tr>
+                    <td><strong>Adresse</strong></td>
+                    <td>{{ competitor.adresse }}</td>
+                </tr>
+                {% endif %}
+                {% if competitor.code_naf %}
+                <tr>
+                    <td><strong>Code NAF</strong></td>
+                    <td>{{ competitor.code_naf }} - {{ competitor.libelle_naf or '' }}</td>
+                </tr>
+                {% endif %}
+                {% if competitor.capital_social %}
+                <tr>
+                    <td><strong>Capital social</strong></td>
+                    <td>{{ competitor.capital_social|format_currency }}</td>
+                </tr>
+                {% endif %}
+            </table>
+        </section>
+
+        <!-- Dirigeants -->
+        {% if dirigeants %}
+        <section class="section">
+            <h2>Dirigeants</h2>
+            {% for dirigeant in dirigeants %}
+            <div class="dirigeant-item">
+                <div>
+                    <div class="dirigeant-name">{{ dirigeant.nom }} {{ dirigeant.prenom }}</div>
+                    <div class="dirigeant-role">{{ dirigeant.fonction }}</div>
+                </div>
+                <div>
+                    {% if dirigeant.date_nomination %}
+                    <span class="badge badge-primary">Depuis {{ dirigeant.date_nomination|format_date('%m/%Y') }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </section>
+        {% endif %}
+
+        <!-- Financial History -->
+        {% if financials %}
+        <section class="section">
+            <h2>Historique financier</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Année</th>
+                        <th>Chiffre d'affaires</th>
+                        <th>Résultat net</th>
+                        <th>Effectif</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for fin in financials %}
+                    <tr>
+                        <td>{{ fin.annee }}</td>
+                        <td>{{ fin.chiffre_affaires|format_currency if fin.chiffre_affaires else '-' }}</td>
+                        <td>{{ fin.resultat_net|format_currency if fin.resultat_net else '-' }}</td>
+                        <td>{{ fin.effectif or '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endif %}
+
+        <!-- Recent Alerts -->
+        {% if alerts %}
+        <section class="section">
+            <h2>Alertes récentes</h2>
+            <div class="timeline">
+                {% for alert in alerts[:10] %}
+                <div class="timeline-item {% if alert.severite == 'critique' %}alert{% endif %}">
+                    <div class="timeline-date">{{ alert.created_at|format_date('%d/%m/%Y') }}</div>
+                    <div class="timeline-content">
+                        <span class="badge badge-{% if alert.severite == 'critique' %}danger{% elif alert.severite == 'important' %}warning{% else %}primary{% endif %}">
+                            {{ alert.severite }}
+                        </span>
+                        <strong>{{ alert.titre }}</strong>
+                        <p>{{ alert.message|truncate_text(150) }}</p>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Job Offers -->
+        {% if job_offers %}
+        <section class="section">
+            <h2>Offres d'emploi récentes</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Poste</th>
+                        <th>Lieu</th>
+                        <th>Type</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in job_offers[:15] %}
+                    <tr>
+                        <td>
+                            {% if job.url %}
+                            <a href="{{ job.url }}">{{ job.titre }}</a>
+                            {% else %}
+                            {{ job.titre }}
+                            {% endif %}
+                        </td>
+                        <td>{{ job.lieu or '-' }}</td>
+                        <td>{{ job.type_contrat or '-' }}</td>
+                        <td>{{ job.date_publication|format_date if job.date_publication else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endif %}
+
+        <!-- BODACC Announcements -->
+        {% if bodacc %}
+        <section class="section">
+            <h2>Annonces légales (BODACC)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for ann in bodacc[:10] %}
+                    <tr>
+                        <td>{{ ann.date_publication|format_date if ann.date_publication else '-' }}</td>
+                        <td><span class="badge badge-primary">{{ ann.type_annonce }}</span></td>
+                        <td>{{ ann.contenu|truncate_text(100) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        {% endif %}
+
+        <!-- Patents & Trademarks -->
+        {% if patents or trademarks %}
+        <section class="section">
+            <h2>Propriété intellectuelle</h2>
+
+            {% if patents %}
+            <h3 style="margin-bottom: 15px; color: var(--primary);">Brevets</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Titre</th>
+                        <th>Numéro</th>
+                        <th>Date de dépôt</th>
+                        <th>Statut</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for patent in patents %}
+                    <tr>
+                        <td>{{ patent.titre }}</td>
+                        <td>{{ patent.numero }}</td>
+                        <td>{{ patent.date_depot|format_date if patent.date_depot else '-' }}</td>
+                        <td><span class="badge badge-success">{{ patent.statut or 'Actif' }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+
+            {% if trademarks %}
+            <h3 style="margin: 20px 0 15px; color: var(--primary);">Marques</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Nom</th>
+                        <th>Numéro</th>
+                        <th>Classes</th>
+                        <th>Date de dépôt</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tm in trademarks %}
+                    <tr>
+                        <td>{{ tm.nom }}</td>
+                        <td>{{ tm.numero }}</td>
+                        <td>{{ tm.classes or '-' }}</td>
+                        <td>{{ tm.date_depot|format_date if tm.date_depot else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </section>
+        {% endif %}
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>StratWatch - Plateforme de veille stratégique</p>
+            <p>Rapport confidentiel - Usage interne uniquement</p>
+        </footer>
+    </div>
+</body>
+</html>

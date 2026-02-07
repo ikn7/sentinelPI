@@ -1,0 +1,84 @@
+"""
+SentinelPi processors module.
+
+This module provides processing components for collected items:
+- Deduplication
+- Filtering
+- Scoring
+- Enrichment
+"""
+
+from src.processors.dedup import (
+    Deduplicator,
+    DeduplicationResult,
+    deduplicate_items,
+)
+from src.processors.filter import (
+    ConditionEvaluator,
+    FilterEngine,
+    FilterMatch,
+    FilterResult,
+    MatchResult,
+    create_filter_from_config,
+    load_filters_from_config,
+)
+from src.processors.scorer import (
+    ScoreBreakdown,
+    ScoredItem,
+    Scorer,
+    ScoringWeights,
+    score_and_rank,
+)
+from src.processors.enricher import (
+    Enricher,
+    EnrichmentResult,
+    KeywordExtractor,
+    LanguageDetector,
+    SentimentAnalyzer,
+    Summarizer,
+    enrich_item,
+)
+from src.processors.preference_learner import (
+    PreferenceLearner,
+    LearningConfig,
+    PreferenceSummary,
+    get_preference_learner,
+    configure_preference_learner,
+    ACTION_SIGNALS,
+)
+
+__all__ = [
+    # Deduplication
+    "Deduplicator",
+    "DeduplicationResult",
+    "deduplicate_items",
+    # Filtering
+    "ConditionEvaluator",
+    "FilterEngine",
+    "FilterMatch",
+    "FilterResult",
+    "MatchResult",
+    "create_filter_from_config",
+    "load_filters_from_config",
+    # Scoring
+    "ScoreBreakdown",
+    "ScoredItem",
+    "Scorer",
+    "ScoringWeights",
+    "score_and_rank",
+    # Enrichment
+    "Enricher",
+    "EnrichmentResult",
+    "KeywordExtractor",
+    "LanguageDetector",
+    "SentimentAnalyzer",
+    "Summarizer",
+    "enrich_item",
+    # Preference Learning
+    "PreferenceLearner",
+    "LearningConfig",
+    "PreferenceSummary",
+    "get_preference_learner",
+    "configure_preference_learner",
+    "ACTION_SIGNALS",
+]

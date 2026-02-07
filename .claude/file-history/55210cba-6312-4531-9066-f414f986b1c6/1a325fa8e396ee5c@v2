@@ -1,0 +1,5 @@
+"""Routes API StratWatch."""
+
+from src.api.routes import alerts, competitors, regulations, reports
+
+__all__ = ["alerts", "competitors", "regulations", "reports"]

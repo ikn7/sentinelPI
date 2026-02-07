@@ -1,0 +1,118 @@
+"""API REST FastAPI pour StratWatch."""
+
+from contextlib import asynccontextmanager
+from datetime import date, datetime
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+
+from src.config import get_settings
+from src.storage import db, init_database
+from src.utils.logging import get_logger, setup_logging
+
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Gestion du cycle de vie de l'application."""
+    settings = get_settings()
+    setup_logging(level=settings.logging.level)
+
+    logger.info("Démarrage de l'API StratWatch")
+    await init_database()
+
+    yield
+
+    logger.info("Arrêt de l'API StratWatch")
+    await db.close()
+
+
+# Création de l'application
+settings = get_settings()
+
+app = FastAPI(
+    title="StratWatch API",
+    description="API de veille stratégique - Intelligence économique",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Configuration CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.api.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Import des routes
+from src.api.routes import alerts, competitors, regulations, reports
+
+app.include_router(competitors.router, prefix="/api/v1/competitors", tags=["Concurrents"])
+app.include_router(regulations.router, prefix="/api/v1/regulations", tags=["Réglementation"])
+app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alertes"])
+app.include_router(reports.router, prefix="/api/v1/reports", tags=["Rapports"])
+
+
+@app.get("/", tags=["Health"])
+async def root():
+    """Point d'entrée de l'API."""
+    return {
+        "name": "StratWatch API",
+        "version": "1.0.0",
+        "status": "running",
+    }
+
+
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """Vérification de l'état de l'API."""
+    return {
+        "status": "healthy",
+        "database": db.is_initialized,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/v1/stats", tags=["Statistics"])
+async def get_stats():
+    """Statistiques globales du système."""
+    from sqlalchemy import func, select
+    from src.storage.models import (
+        Alert, Competitor, JobOffer, NewsMention, Regulation
+    )
+
+    async with db.session() as session:
+        # Comptages
+        competitors_count = await session.execute(
+            select(func.count(Competitor.id)).where(Competitor.actif == True)
+        )
+        alerts_count = await session.execute(
+            select(func.count(Alert.id)).where(Alert.read_at == None)
+        )
+        regulations_count = await session.execute(
+            select(func.count(Regulation.id))
+        )
+        jobs_count = await session.execute(
+            select(func.count(JobOffer.id)).where(JobOffer.active == True)
+        )
+
+        return {
+            "competitors": {
+                "active": competitors_count.scalar() or 0,
+            },
+            "alerts": {
+                "unread": alerts_count.scalar() or 0,
+            },
+            "regulations": {
+                "total": regulations_count.scalar() or 0,
+            },
+            "job_offers": {
+                "active": jobs_count.scalar() or 0,
+            },
+            "timestamp": datetime.now().isoformat(),
+        }

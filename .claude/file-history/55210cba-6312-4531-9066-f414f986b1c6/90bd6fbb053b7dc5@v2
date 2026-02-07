@@ -1,0 +1,97 @@
+app:
+  name: "StratWatch"
+  version: "1.0.0"
+  environment: "production"
+  timezone: "Europe/Paris"
+  language: "fr"
+
+database:
+  type: "sqlite"
+  sqlite:
+    path: "data/stratwatch.db"
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "stratwatch"
+    user: "${DB_USER}"
+    password: "${DB_PASSWORD}"
+
+collection:
+  intervals:
+    legal_data: 1440
+    job_offers: 360
+    news: 60
+    regulations: 720
+    patents: 1440
+
+  rate_limits:
+    default: 10
+    pappers: 5
+    legifrance: 10
+    google_news: 5
+
+  retry:
+    max_attempts: 3
+    base_delay: 5
+    max_delay: 60
+
+processing:
+  nlp:
+    model: "fr_core_news_md"
+    batch_size: 100
+  sentiment:
+    enabled: true
+    threshold_negative: -0.3
+    threshold_positive: 0.3
+
+alerting:
+  enabled: true
+  channels:
+    telegram:
+      enabled: true
+      bot_token: "${TELEGRAM_BOT_TOKEN}"
+      chat_id: "${TELEGRAM_CHAT_ID}"
+      min_severity: "attention"
+    email:
+      enabled: false
+      smtp_host: ""
+      smtp_port: 587
+      username: ""
+      password: ""
+      from_address: ""
+      to_addresses: []
+      min_severity: "important"
+
+  rules:
+    recrutement_massif:
+      threshold: 5
+      period_days: 30
+    echeance_proche:
+      days_before: 30
+    echeance_imminente:
+      days_before: 7
+
+reporting:
+  auto_generate: true
+  schedule: "weekly"
+  day_of_week: 1
+  hour: 8
+  formats: ["html", "pdf"]
+  email_report: false
+
+api:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+
+dashboard:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8501
+
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+  rotation: "10 MB"
+  retention: "30 days"

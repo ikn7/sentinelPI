@@ -1,0 +1,574 @@
+"""Générateur de rapports StratWatch.
+
+Génère des rapports en HTML, PDF et Markdown à partir des données collectées.
+"""
+
+import os
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.config import get_settings, PROJECT_ROOT
+from src.storage.models import (
+    Alert, BodaccAnnouncement, Competitor, Dirigeant,
+    Financial, JobOffer, NewsMention, Patent,
+    Regulation, RegulationDeadline, Trademark
+)
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+# Répertoire des templates
+TEMPLATES_DIR = PROJECT_ROOT / "src" / "reporting" / "templates"
+
+
+class ReportGenerator:
+    """Générateur de rapports multi-format.
+
+    Produit des rapports en HTML, PDF et Markdown
+    à partir des données de veille.
+
+    Example:
+        generator = ReportGenerator(session)
+        path = await generator.generate_weekly_report()
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialise le générateur.
+
+        Args:
+            session: Session SQLAlchemy.
+        """
+        self._session = session
+        self._settings = get_settings()
+        self._logger = get_logger("reporting")
+
+        # Configurer Jinja2
+        self._env = Environment(
+            loader=FileSystemLoader(TEMPLATES_DIR),
+            autoescape=select_autoescape(["html", "xml"]),
+        )
+
+        # Ajouter des filtres personnalisés
+        self._env.filters["format_number"] = self._format_number
+        self._env.filters["format_date"] = self._format_date
+        self._env.filters["format_currency"] = self._format_currency
+        self._env.filters["truncate_text"] = self._truncate_text
+
+    # =========================================================================
+    # Filtres Jinja2
+    # =========================================================================
+
+    @staticmethod
+    def _format_number(value: Optional[int]) -> str:
+        """Formate un nombre avec séparateurs."""
+        if value is None:
+            return "N/A"
+        return f"{value:,}".replace(",", " ")
+
+    @staticmethod
+    def _format_date(value: Optional[date], fmt: str = "%d/%m/%Y") -> str:
+        """Formate une date."""
+        if value is None:
+            return "N/A"
+        return value.strftime(fmt)
+
+    @staticmethod
+    def _format_currency(value: Optional[int], currency: str = "€") -> str:
+        """Formate un montant en devise."""
+        if value is None:
+            return "N/A"
+        return f"{value:,} {currency}".replace(",", " ")
+
+    @staticmethod
+    def _truncate_text(value: str, length: int = 100) -> str:
+        """Tronque un texte."""
+        if len(value) <= length:
+            return value
+        return value[:length - 3] + "..."
+
+    # =========================================================================
+    # Collecte des données
+    # =========================================================================
+
+    async def _get_stats(self, days: int = 7) -> dict[str, Any]:
+        """Récupère les statistiques globales.
+
+        Args:
+            days: Période en jours.
+
+        Returns:
+            Dictionnaire de statistiques.
+        """
+        since = datetime.now() - timedelta(days=days)
+
+        # Concurrents
+        competitors = await self._session.execute(
+            select(func.count(Competitor.id)).where(Competitor.actif == True)
+        )
+
+        # Alertes
+        total_alerts = await self._session.execute(
+            select(func.count(Alert.id)).where(Alert.created_at >= since)
+        )
+        critical_alerts = await self._session.execute(
+            select(func.count(Alert.id)).where(
+                Alert.created_at >= since,
+                Alert.severite == "critique"
+            )
+        )
+
+        # Par catégorie
+        alerts_by_cat = await self._session.execute(
+            select(Alert.categorie, func.count(Alert.id))
+            .where(Alert.created_at >= since)
+            .group_by(Alert.categorie)
+        )
+
+        # Nouvelles données
+        new_jobs = await self._session.execute(
+            select(func.count(JobOffer.id)).where(JobOffer.date_detection >= since)
+        )
+        new_regs = await self._session.execute(
+            select(func.count(Regulation.id)).where(Regulation.collected_at >= since)
+        )
+        new_bodacc = await self._session.execute(
+            select(func.count(BodaccAnnouncement.id)).where(
+                BodaccAnnouncement.collected_at >= since
+            )
+        )
+
+        return {
+            "period_days": days,
+            "competitors_count": competitors.scalar() or 0,
+            "total_alerts": total_alerts.scalar() or 0,
+            "critical_alerts": critical_alerts.scalar() or 0,
+            "alerts_by_category": {row[0]: row[1] for row in alerts_by_cat.all()},
+            "new_job_offers": new_jobs.scalar() or 0,
+            "new_regulations": new_regs.scalar() or 0,
+            "new_bodacc": new_bodacc.scalar() or 0,
+        }
+
+    async def _get_alerts(self, days: int = 7, limit: int = 50) -> list[dict]:
+        """Récupère les alertes récentes.
+
+        Args:
+            days: Période en jours.
+            limit: Nombre maximum d'alertes.
+
+        Returns:
+            Liste des alertes.
+        """
+        since = datetime.now() - timedelta(days=days)
+
+        result = await self._session.execute(
+            select(Alert)
+            .where(Alert.created_at >= since)
+            .order_by(Alert.created_at.desc())
+            .limit(limit)
+        )
+
+        alerts = []
+        for alert in result.scalars():
+            competitor_name = None
+            if alert.competitor_id:
+                comp = await self._session.execute(
+                    select(Competitor.nom).where(Competitor.id == alert.competitor_id)
+                )
+                competitor_name = comp.scalar()
+
+            alerts.append({
+                "type": alert.type,
+                "categorie": alert.categorie,
+                "severite": alert.severite,
+                "titre": alert.titre,
+                "message": alert.message,
+                "competitor": competitor_name,
+                "source_url": alert.source_url,
+                "created_at": alert.created_at,
+            })
+
+        return alerts
+
+    async def _get_competitors_summary(self, days: int = 7) -> list[dict]:
+        """Récupère le résumé des concurrents.
+
+        Args:
+            days: Période en jours.
+
+        Returns:
+            Liste des concurrents avec statistiques.
+        """
+        since = datetime.now() - timedelta(days=days)
+
+        result = await self._session.execute(
+            select(Competitor)
+            .where(Competitor.actif == True)
+            .order_by(Competitor.priorite, Competitor.nom)
+        )
+
+        competitors = []
+        for comp in result.scalars():
+            # Alertes
+            alerts_count = await self._session.execute(
+                select(func.count(Alert.id)).where(
+                    Alert.competitor_id == comp.id,
+                    Alert.created_at >= since
+                )
+            )
+
+            # Offres d'emploi
+            jobs_count = await self._session.execute(
+                select(func.count(JobOffer.id)).where(
+                    JobOffer.competitor_id == comp.id,
+                    JobOffer.date_detection >= since
+                )
+            )
+
+            # Dernières finances
+            last_financial = await self._session.execute(
+                select(Financial)
+                .where(Financial.competitor_id == comp.id)
+                .order_by(Financial.annee.desc())
+                .limit(1)
+            )
+            financial = last_financial.scalar_one_or_none()
+
+            competitors.append({
+                "id": comp.id,
+                "siren": comp.siren,
+                "nom": comp.nom,
+                "priorite": comp.priorite,
+                "forme_juridique": comp.forme_juridique,
+                "code_naf": comp.code_naf,
+                "alerts_count": alerts_count.scalar() or 0,
+                "jobs_count": jobs_count.scalar() or 0,
+                "last_ca": financial.chiffre_affaires if financial else None,
+                "last_effectif": financial.effectif if financial else None,
+            })
+
+        return competitors
+
+    async def _get_regulations_summary(self, days: int = 7) -> list[dict]:
+        """Récupère les nouvelles réglementations.
+
+        Args:
+            days: Période en jours.
+
+        Returns:
+            Liste des réglementations.
+        """
+        since = datetime.now() - timedelta(days=days)
+
+        result = await self._session.execute(
+            select(Regulation)
+            .where(Regulation.collected_at >= since)
+            .order_by(Regulation.date_publication.desc())
+            .limit(20)
+        )
+
+        return [
+            {
+                "type": r.type,
+                "numero": r.numero,
+                "titre": r.titre_court or r.titre,
+                "date_publication": r.date_publication,
+                "source": r.source,
+                "url": r.url,
+                "resume": r.resume,
+                "secteurs": r.get_secteurs(),
+            }
+            for r in result.scalars()
+        ]
+
+    async def _get_deadlines(self, days: int = 30) -> list[dict]:
+        """Récupère les échéances à venir.
+
+        Args:
+            days: Horizon en jours.
+
+        Returns:
+            Liste des échéances.
+        """
+        today = date.today()
+        end_date = today + timedelta(days=days)
+
+        result = await self._session.execute(
+            select(RegulationDeadline, Regulation.titre)
+            .join(Regulation)
+            .where(
+                RegulationDeadline.date_echeance >= today,
+                RegulationDeadline.date_echeance <= end_date
+            )
+            .order_by(RegulationDeadline.date_echeance)
+        )
+
+        deadlines = []
+        for deadline, titre in result.all():
+            days_until = (deadline.date_echeance - today).days
+            deadlines.append({
+                "description": deadline.description,
+                "date_echeance": deadline.date_echeance,
+                "days_until": days_until,
+                "obligatoire": deadline.obligatoire,
+                "regulation_titre": titre,
+                "urgency": "critical" if days_until <= 7 else "warning" if days_until <= 14 else "normal",
+            })
+
+        return deadlines
+
+    # =========================================================================
+    # Génération des rapports
+    # =========================================================================
+
+    def _get_output_path(self, filename: str) -> Path:
+        """Retourne le chemin de sortie pour un rapport.
+
+        Args:
+            filename: Nom du fichier.
+
+        Returns:
+            Chemin complet.
+        """
+        output_dir = self._settings.get_data_dir() / "exports"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir / filename
+
+    async def generate_weekly_report(
+        self,
+        formats: Optional[list[str]] = None,
+    ) -> list[Path]:
+        """Génère le rapport hebdomadaire.
+
+        Args:
+            formats: Formats de sortie (html, pdf, md).
+
+        Returns:
+            Liste des fichiers générés.
+        """
+        if formats is None:
+            formats = self._settings.reporting.formats
+
+        self._logger.info("Génération du rapport hebdomadaire")
+
+        # Collecter les données
+        data = {
+            "title": "Rapport de veille hebdomadaire",
+            "generated_at": datetime.now(),
+            "period_start": date.today() - timedelta(days=7),
+            "period_end": date.today(),
+            "stats": await self._get_stats(7),
+            "alerts": await self._get_alerts(7),
+            "competitors": await self._get_competitors_summary(7),
+            "regulations": await self._get_regulations_summary(7),
+            "deadlines": await self._get_deadlines(30),
+        }
+
+        # Générer les fichiers
+        generated = []
+        timestamp = datetime.now().strftime("%Y%m%d")
+
+        for fmt in formats:
+            try:
+                if fmt == "html":
+                    path = await self._generate_html(data, f"rapport_hebdo_{timestamp}.html")
+                    generated.append(path)
+                elif fmt == "pdf":
+                    path = await self._generate_pdf(data, f"rapport_hebdo_{timestamp}.pdf")
+                    generated.append(path)
+                elif fmt == "md":
+                    path = await self._generate_markdown(data, f"rapport_hebdo_{timestamp}.md")
+                    generated.append(path)
+            except Exception as e:
+                self._logger.error(f"Erreur génération {fmt}: {e}")
+
+        return generated
+
+    async def generate_competitor_report(
+        self,
+        competitor_id: str,
+        formats: Optional[list[str]] = None,
+    ) -> list[Path]:
+        """Génère un rapport sur un concurrent.
+
+        Args:
+            competitor_id: ID du concurrent.
+            formats: Formats de sortie.
+
+        Returns:
+            Liste des fichiers générés.
+        """
+        if formats is None:
+            formats = self._settings.reporting.formats
+
+        # Récupérer le concurrent
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.id == competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+
+        if not competitor:
+            raise ValueError(f"Concurrent non trouvé: {competitor_id}")
+
+        self._logger.info(f"Génération du rapport pour {competitor.nom}")
+
+        # Dirigeants
+        dirigeants_result = await self._session.execute(
+            select(Dirigeant).where(
+                Dirigeant.competitor_id == competitor_id,
+                Dirigeant.actif == True
+            )
+        )
+
+        # Finances
+        financials_result = await self._session.execute(
+            select(Financial)
+            .where(Financial.competitor_id == competitor_id)
+            .order_by(Financial.annee.desc())
+            .limit(5)
+        )
+
+        # Offres d'emploi
+        jobs_result = await self._session.execute(
+            select(JobOffer)
+            .where(JobOffer.competitor_id == competitor_id)
+            .order_by(JobOffer.date_detection.desc())
+            .limit(20)
+        )
+
+        # Alertes
+        alerts_result = await self._session.execute(
+            select(Alert)
+            .where(Alert.competitor_id == competitor_id)
+            .order_by(Alert.created_at.desc())
+            .limit(10)
+        )
+
+        # BODACC
+        bodacc_result = await self._session.execute(
+            select(BodaccAnnouncement)
+            .where(BodaccAnnouncement.competitor_id == competitor_id)
+            .order_by(BodaccAnnouncement.date_publication.desc())
+            .limit(10)
+        )
+
+        data = {
+            "title": f"Fiche concurrent - {competitor.nom}",
+            "generated_at": datetime.now(),
+            "competitor": competitor,
+            "dirigeants": list(dirigeants_result.scalars().all()),
+            "financials": list(financials_result.scalars().all()),
+            "jobs": list(jobs_result.scalars().all()),
+            "alerts": list(alerts_result.scalars().all()),
+            "bodacc": list(bodacc_result.scalars().all()),
+        }
+
+        # Générer les fichiers
+        generated = []
+        timestamp = datetime.now().strftime("%Y%m%d")
+        safe_name = competitor.nom.replace(" ", "_")[:20]
+
+        for fmt in formats:
+            try:
+                if fmt == "html":
+                    path = await self._generate_html(
+                        data, f"fiche_{safe_name}_{timestamp}.html",
+                        template="competitor_report.html"
+                    )
+                    generated.append(path)
+                elif fmt == "pdf":
+                    path = await self._generate_pdf(
+                        data, f"fiche_{safe_name}_{timestamp}.pdf",
+                        template="competitor_report.html"
+                    )
+                    generated.append(path)
+            except Exception as e:
+                self._logger.error(f"Erreur génération {fmt}: {e}")
+
+        return generated
+
+    async def _generate_html(
+        self,
+        data: dict[str, Any],
+        filename: str,
+        template: str = "weekly_report.html",
+    ) -> Path:
+        """Génère un rapport HTML.
+
+        Args:
+            data: Données du rapport.
+            filename: Nom du fichier.
+            template: Nom du template.
+
+        Returns:
+            Chemin du fichier généré.
+        """
+        template_obj = self._env.get_template(template)
+        html_content = template_obj.render(**data)
+
+        output_path = self._get_output_path(filename)
+        output_path.write_text(html_content, encoding="utf-8")
+
+        self._logger.info(f"Rapport HTML généré: {output_path}")
+        return output_path
+
+    async def _generate_pdf(
+        self,
+        data: dict[str, Any],
+        filename: str,
+        template: str = "weekly_report.html",
+    ) -> Path:
+        """Génère un rapport PDF.
+
+        Args:
+            data: Données du rapport.
+            filename: Nom du fichier.
+            template: Nom du template.
+
+        Returns:
+            Chemin du fichier généré.
+        """
+        try:
+            from weasyprint import HTML, CSS
+        except ImportError:
+            self._logger.error("WeasyPrint non installé")
+            raise
+
+        # Générer le HTML
+        template_obj = self._env.get_template(template)
+        html_content = template_obj.render(**data)
+
+        # Convertir en PDF
+        output_path = self._get_output_path(filename)
+        html = HTML(string=html_content, base_url=str(TEMPLATES_DIR))
+        html.write_pdf(output_path)
+
+        self._logger.info(f"Rapport PDF généré: {output_path}")
+        return output_path
+
+    async def _generate_markdown(
+        self,
+        data: dict[str, Any],
+        filename: str,
+    ) -> Path:
+        """Génère un rapport Markdown.
+
+        Args:
+            data: Données du rapport.
+            filename: Nom du fichier.
+
+        Returns:
+            Chemin du fichier généré.
+        """
+        template_obj = self._env.get_template("weekly_report.md")
+        md_content = template_obj.render(**data)
+
+        output_path = self._get_output_path(filename)
+        output_path.write_text(md_content, encoding="utf-8")
+
+        self._logger.info(f"Rapport Markdown généré: {output_path}")
+        return output_path

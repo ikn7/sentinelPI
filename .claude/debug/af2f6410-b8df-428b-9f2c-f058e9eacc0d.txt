@@ -1,0 +1,51 @@
+2026-02-05T20:04:39.582Z [DEBUG] [init] configureGlobalMTLS starting
+2026-02-05T20:04:39.583Z [DEBUG] [init] configureGlobalMTLS complete
+2026-02-05T20:04:39.583Z [DEBUG] [init] configureGlobalAgents starting
+2026-02-05T20:04:39.583Z [DEBUG] [init] configureGlobalAgents complete
+2026-02-05T20:04:39.604Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-02-05T20:04:39.621Z [DEBUG] [ToolSearch:optimistic] mode=tst-auto, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-02-05T20:04:39.625Z [DEBUG] [STARTUP] Running setup()...
+2026-02-05T20:04:39.627Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-02-05T20:04:39.631Z [DEBUG] Loading skills from: managed=/etc/claude-code/.claude/skills, user=/home/user/.claude/skills, project=[]
+2026-02-05T20:04:39.634Z [DEBUG] Passes: Cache stale, returning cached data and refreshing in background
+2026-02-05T20:04:39.636Z [DEBUG] Error log sink initialized
+2026-02-05T20:04:39.680Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-02-05T20:04:39.680Z [DEBUG] Total plugin skills loaded: 0
+2026-02-05T20:04:39.680Z [DEBUG] Total plugin commands loaded: 0
+2026-02-05T20:04:39.680Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-02-05T20:04:39.681Z [DEBUG] [STARTUP] setup() completed in 56ms
+2026-02-05T20:04:39.681Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-02-05T20:04:39.697Z [DEBUG] Total plugin agents loaded: 0
+2026-02-05T20:04:39.697Z [DEBUG] Loaded 0 unique skills (managed: 0, user: 0, project: 0, legacy commands: 0)
+2026-02-05T20:04:39.707Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 2 bundled skills
+2026-02-05T20:04:39.711Z [DEBUG] [STARTUP] Commands and agents loaded in 30ms
+2026-02-05T20:04:39.711Z [DEBUG] [STARTUP] Running showSetupScreens()...
+2026-02-05T20:04:39.715Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-02-05T20:04:39.721Z [DEBUG] Grove: Cache stale, returning cached data and refreshing in background
+2026-02-05T20:04:39.728Z [DEBUG] [render] initLayout starting
+2026-02-05T20:04:39.728Z [DEBUG] Layout engine: yoga
+2026-02-05T20:04:39.733Z [DEBUG] Git remote URL: null
+2026-02-05T20:04:39.733Z [DEBUG] No git remote URL found
+2026-02-05T20:04:39.733Z [DEBUG] Not in a GitHub repository, skipping path mapping update
+2026-02-05T20:04:39.747Z [DEBUG] Acquired PID lock for 2.1.31 (PID 92560)
+2026-02-05T20:04:39.747Z [DEBUG] Acquired PID lock on running version: /home/user/.local/share/claude/versions/2.1.31
+2026-02-05T20:04:39.790Z [DEBUG] [render] initLayout complete
+2026-02-05T20:04:39.814Z [DEBUG] [keybindings] KeybindingSetup initialized with 100 bindings, 0 warnings
+2026-02-05T20:04:39.837Z [DEBUG] [render] first ink render: 2026ms since process start
+2026-02-05T20:04:39.842Z [DEBUG] [keybindings] Watching for changes to /home/user/.claude/keybindings.json
+2026-02-05T20:04:39.860Z [DEBUG] Failed to fetch and cache passes eligibility
+2026-02-05T20:04:39.860Z [ERROR] AxiosError: Error
+    at xM (/$bunfs/root/claude:42:1144)
+    at <anonymous> (/$bunfs/root/claude:47:10089)
+    at emit (node:events:92:22)
+    at endReadableNT (internal:streams/readable:862:50)
+    at processTicksAndRejections (native:7:39)
+    at request (/$bunfs/root/claude:49:2149)
+    at processTicksAndRejections (native:7:39)
+2026-02-05T20:04:39.861Z [DEBUG] [Claude in Chrome] Extension not found in any browser
+2026-02-05T20:04:39.994Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.92560.1770321879994
+2026-02-05T20:04:39.995Z [DEBUG] Preserving file permissions: 100600
+2026-02-05T20:04:40.007Z [DEBUG] Temp file written successfully, size: 6283 bytes
+2026-02-05T20:04:40.007Z [DEBUG] Applied original permissions to temp file
+2026-02-05T20:04:40.007Z [DEBUG] Renaming /home/user/.claude.json.tmp.92560.1770321879994 to /home/user/.claude.json
+2026-02-05T20:04:40.008Z [DEBUG] File /home/user/.claude.json written atomically

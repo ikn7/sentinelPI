@@ -1,0 +1,518 @@
+/home/user/sentinelpi/src/dashboard/app.py-13-import streamlit as st
+/home/user/sentinelpi/src/dashboard/app.py-14-
+src/dashboard/app.py:15:from src.utils.config import get_settings
+/home/user/sentinelpi/src/dashboard/app.py-16-from src.utils.logging import create_logger, setup_logging
+/home/user/sentinelpi/src/dashboard/app.py-17-
+--
+/home/user/sentinelpi/src/dashboard/app.py-20-
+src/dashboard/app.py-21-def _get_app_config() -> tuple[str, str]:
+src/dashboard/app.py:22:    """Get the application name and icon from settings (for early use before full config load)."""
+/home/user/sentinelpi/src/dashboard/app.py-23-    import yaml
+/home/user/sentinelpi/src/dashboard/app.py-24-    from src.utils.config import PROJECT_ROOT
+src/dashboard/app.py-25-    try:
+src/dashboard/app.py:26:        settings_path = PROJECT_ROOT / "config" / "settings.yaml"
+src/dashboard/app.py:27:        if settings_path.exists():
+src/dashboard/app.py:28:            with open(settings_path, "r", encoding="utf-8") as f:
+/home/user/sentinelpi/src/dashboard/app.py-29-                raw = yaml.safe_load(f) or {}
+/home/user/sentinelpi/src/dashboard/app.py-30-                app = raw.get("app", {})
+--
+/home/user/sentinelpi/src/dashboard/app.py-286-
+/home/user/sentinelpi/src/dashboard/app.py-287-
+src/dashboard/app.py:288:async def _get_sidebar_stats():
+src/dashboard/app.py:289:    """Get quick stats for the sidebar."""
+/home/user/sentinelpi/src/dashboard/app.py-290-    from src.storage.database import get_session, init_database
+/home/user/sentinelpi/src/dashboard/app.py-291-    from src.storage.models import Source, Item, Alert, ItemStatus
+--
+/home/user/sentinelpi/src/dashboard/app.py-715-    page_icon=APP_ICON,
+/home/user/sentinelpi/src/dashboard/app.py-716-    layout="wide",
+src/dashboard/app.py:717:    initial_sidebar_state="expanded",
+/home/user/sentinelpi/src/dashboard/app.py-718-)
+/home/user/sentinelpi/src/dashboard/app.py-719-
+--
+/home/user/sentinelpi/src/dashboard/app.py-744-
+/home/user/sentinelpi/src/dashboard/app.py-745-
+src/dashboard/app.py:746:def render_sidebar() -> str:
+src/dashboard/app.py:747:    """Render the sidebar navigation with modern styled buttons."""
+/home/user/sentinelpi/src/dashboard/app.py-748-    read_only = st.session_state.get("read_only", False)
+/home/user/sentinelpi/src/dashboard/app.py-749-
+--
+/home/user/sentinelpi/src/dashboard/app.py-765-            ("alerts", "🔔", "Alertes"),
+/home/user/sentinelpi/src/dashboard/app.py-766-            ("stats", "📊", "Stats"),
+src/dashboard/app.py:767:            ("settings", "⚙️", "Config"),
+/home/user/sentinelpi/src/dashboard/app.py-768-            ("docs", "📚", "Docs"),
+/home/user/sentinelpi/src/dashboard/app.py-769-        ]
+/home/user/sentinelpi/src/dashboard/app.py-770-
+src/dashboard/app.py:771:    with st.sidebar:
+/home/user/sentinelpi/src/dashboard/app.py-772-        # Logo / brand - use configured app name and icon
+/home/user/sentinelpi/src/dashboard/app.py-773-        st.markdown(
+--
+/home/user/sentinelpi/src/dashboard/app.py-829-        # Quick stats badges
+src/dashboard/app.py-830-        try:
+src/dashboard/app.py:831:            sidebar_stats = run_async(_get_sidebar_stats())
+src/dashboard/app.py-832-        except Exception:
+src/dashboard/app.py:833:            sidebar_stats = {"sources": 0, "items_24h": 0, "alerts": 0, "unread": 0}
+/home/user/sentinelpi/src/dashboard/app.py-834-
+/home/user/sentinelpi/src/dashboard/app.py-835-        st.markdown(
+--
+src/dashboard/app.py-838-            'background:rgba(128,128,128,0.06);border-radius:8px;">'
+src/dashboard/app.py-839-            f'<div style="text-align:center;line-height:1.2;">'
+src/dashboard/app.py:840:            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["sources"]}</div>'
+src/dashboard/app.py-841-            f'<div style="font-size:0.65rem;opacity:0.6;">Sources</div></div>'
+src/dashboard/app.py-842-            f'<div style="text-align:center;line-height:1.2;">'
+src/dashboard/app.py:843:            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["items_24h"]}</div>'
+src/dashboard/app.py-844-            f'<div style="font-size:0.65rem;opacity:0.6;">Items/24h</div></div>'
+src/dashboard/app.py-845-            f'<div style="text-align:center;line-height:1.2;">'
+src/dashboard/app.py:846:            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["alerts"]}</div>'
+src/dashboard/app.py-847-            f'<div style="font-size:0.65rem;opacity:0.6;">Alertes</div></div>'
+src/dashboard/app.py-848-            f'<div style="text-align:center;line-height:1.2;">'
+src/dashboard/app.py:849:            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["unread"]}</div>'
+src/dashboard/app.py-850-            f'<div style="font-size:0.65rem;opacity:0.6;">Non lus</div></div>'
+/home/user/sentinelpi/src/dashboard/app.py-851-            '</div>',
+--
+/home/user/sentinelpi/src/dashboard/app.py-857-            st.markdown("")
+src/dashboard/app.py-858-            with st.expander("🔓 Acces complet"):
+src/dashboard/app.py:859:                pw = st.text_input("Mot de passe", type="password", key="sidebar_pw")
+src/dashboard/app.py-860-                if st.button("Se connecter", use_container_width=True):
+src/dashboard/app.py:861:                    raw = _load_settings_yaml()
+/home/user/sentinelpi/src/dashboard/app.py-862-                    stored_hash = raw.get("dashboard", {}).get("password_hash", "")
+src/dashboard/app.py-863-                    if stored_hash and _check_password(pw, stored_hash):
+--
+/home/user/sentinelpi/src/dashboard/app.py-869-
+/home/user/sentinelpi/src/dashboard/app.py-870-        # Version at bottom
+src/dashboard/app.py:871:        settings = get_settings()
+/home/user/sentinelpi/src/dashboard/app.py-872-        st.markdown(
+src/dashboard/app.py-873-            f'<div style="text-align:center;padding-top:0.5rem;opacity:0.4;font-size:0.7rem;">'
+src/dashboard/app.py:874:            f'v{settings.app.version}</div>',
+/home/user/sentinelpi/src/dashboard/app.py-875-            unsafe_allow_html=True,
+/home/user/sentinelpi/src/dashboard/app.py-876-        )
+--
+/home/user/sentinelpi/src/dashboard/app.py-879-
+/home/user/sentinelpi/src/dashboard/app.py-880-
+src/dashboard/app.py:881:def render_feed_page() -> None:
+/home/user/sentinelpi/src/dashboard/app.py-882-    """Render the main feed page."""
+/home/user/sentinelpi/src/dashboard/app.py-883-    st.header("📰 Flux d'actualités")
+--
+/home/user/sentinelpi/src/dashboard/app.py-1200-
+/home/user/sentinelpi/src/dashboard/app.py-1201-
+src/dashboard/app.py:1202:def render_sources_page() -> None:
+/home/user/sentinelpi/src/dashboard/app.py-1203-    """Render the sources management page."""
+/home/user/sentinelpi/src/dashboard/app.py-1204-    st.header("📡 Gestion des sources")
+--
+/home/user/sentinelpi/src/dashboard/app.py-1401-
+/home/user/sentinelpi/src/dashboard/app.py-1402-
+src/dashboard/app.py:1403:def _render_condition_editor(prefix: str, cond_type: str = "keywords", field: str = "all",
+src/dashboard/app.py-1404-                             operator: str = "contains", value_text: str = "",
+src/dashboard/app.py-1405-                             case_sensitive: bool = False, logic: str = "and",
+--
+/home/user/sentinelpi/src/dashboard/app.py-1605-
+/home/user/sentinelpi/src/dashboard/app.py-1606-
+src/dashboard/app.py:1607:def render_filters_page() -> None:
+/home/user/sentinelpi/src/dashboard/app.py-1608-    """Render the filters configuration page."""
+/home/user/sentinelpi/src/dashboard/app.py-1609-    st.header("🎯 Configuration des filtres")
+--
+/home/user/sentinelpi/src/dashboard/app.py-1700-
+/home/user/sentinelpi/src/dashboard/app.py-1701-
+src/dashboard/app.py:1702:def render_alerts_page() -> None:
+/home/user/sentinelpi/src/dashboard/app.py-1703-    """Render the alerts history page."""
+/home/user/sentinelpi/src/dashboard/app.py-1704-    st.header("🔔 Historique des alertes")
+--
+/home/user/sentinelpi/src/dashboard/app.py-1765-
+/home/user/sentinelpi/src/dashboard/app.py-1766-
+src/dashboard/app.py:1767:def render_stats_page() -> None:
+/home/user/sentinelpi/src/dashboard/app.py-1768-    """Render the statistics page."""
+/home/user/sentinelpi/src/dashboard/app.py-1769-    import plotly.graph_objects as go
+--
+/home/user/sentinelpi/src/dashboard/app.py-1960-
+/home/user/sentinelpi/src/dashboard/app.py-1961-
+src/dashboard/app.py:1962:def _save_settings_yaml(data: dict) -> None:
+src/dashboard/app.py:1963:    """Save settings dict to YAML file."""
+/home/user/sentinelpi/src/dashboard/app.py-1964-    import yaml
+/home/user/sentinelpi/src/dashboard/app.py-1965-    from src.utils.config import PROJECT_ROOT
+src/dashboard/app.py:1966:    settings_path = PROJECT_ROOT / "config" / "settings.yaml"
+src/dashboard/app.py:1967:    with open(settings_path, "w", encoding="utf-8") as f:
+/home/user/sentinelpi/src/dashboard/app.py-1968-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+/home/user/sentinelpi/src/dashboard/app.py-1969-
+/home/user/sentinelpi/src/dashboard/app.py-1970-
+src/dashboard/app.py:1971:def _load_settings_yaml() -> dict:
+src/dashboard/app.py:1972:    """Load raw settings dict from YAML."""
+/home/user/sentinelpi/src/dashboard/app.py-1973-    import yaml
+/home/user/sentinelpi/src/dashboard/app.py-1974-    from src.utils.config import PROJECT_ROOT
+src/dashboard/app.py:1975:    settings_path = PROJECT_ROOT / "config" / "settings.yaml"
+src/dashboard/app.py:1976:    with open(settings_path, "r", encoding="utf-8") as f:
+/home/user/sentinelpi/src/dashboard/app.py-1977-        return yaml.safe_load(f)
+/home/user/sentinelpi/src/dashboard/app.py-1978-
+--
+/home/user/sentinelpi/src/dashboard/app.py-1999-
+/home/user/sentinelpi/src/dashboard/app.py-2000-
+src/dashboard/app.py:2001:def render_settings_page() -> None:
+src/dashboard/app.py:2002:    """Render the settings page with editable fields."""
+/home/user/sentinelpi/src/dashboard/app.py-2003-    st.header("⚙️ Parametres")
+/home/user/sentinelpi/src/dashboard/app.py-2004-
+src/dashboard/app.py:2005:    raw = _load_settings_yaml()
+/home/user/sentinelpi/src/dashboard/app.py-2006-
+/home/user/sentinelpi/src/dashboard/app.py-2007-    tabs = st.tabs(["🔧 General", "📡 Collecte", "🔔 Alertes", "🗄️ Base de donnees", "📋 Logs", "🛠 Maintenance", "🔒 Securite"])
+/home/user/sentinelpi/src/dashboard/app.py-2008-
+src/dashboard/app.py-2009-    with tabs[0]:
+src/dashboard/app.py:2010:        with st.form("settings_general"):
+/home/user/sentinelpi/src/dashboard/app.py-2011-            col1, col2 = st.columns(2)
+src/dashboard/app.py-2012-            with col1:
+--
+/home/user/sentinelpi/src/dashboard/app.py-2030-                new_config.setdefault("logging", {})["level"] = log_level
+src/dashboard/app.py-2031-                try:
+src/dashboard/app.py:2032:                    _save_settings_yaml(new_config)
+/home/user/sentinelpi/src/dashboard/app.py-2033-                    st.success("Parametres generaux sauvegardes ! Rechargez la page pour voir les changements.")
+src/dashboard/app.py-2034-                except Exception as e:
+--
+/home/user/sentinelpi/src/dashboard/app.py-2043-        DEFAULT_ACCEPT_LANG = "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"
+/home/user/sentinelpi/src/dashboard/app.py-2044-
+src/dashboard/app.py:2045:        with st.form("settings_collection"):
+/home/user/sentinelpi/src/dashboard/app.py-2046-            col1, col2 = st.columns(2)
+/home/user/sentinelpi/src/dashboard/app.py-2047-            coll = raw.get("collection", {})
+--
+/home/user/sentinelpi/src/dashboard/app.py-2259-                }
+src/dashboard/app.py-2260-                try:
+src/dashboard/app.py:2261:                    _save_settings_yaml(new_config)
+/home/user/sentinelpi/src/dashboard/app.py-2262-                    st.success("Parametres de collecte sauvegardes !")
+/home/user/sentinelpi/src/dashboard/app.py-2263-                    st.info("Redemarrez l'application pour appliquer les nouveaux headers HTTP")
+--
+/home/user/sentinelpi/src/dashboard/app.py-2270-        alerting = alerts_raw.get("alerting", {})
+/home/user/sentinelpi/src/dashboard/app.py-2271-
+src/dashboard/app.py:2272:        with st.form("settings_alerts"):
+/home/user/sentinelpi/src/dashboard/app.py-2273-            # General
+/home/user/sentinelpi/src/dashboard/app.py-2274-            st.subheader("General")
+--
+/home/user/sentinelpi/src/dashboard/app.py-2497-
+src/dashboard/app.py-2498-    with tabs[3]:
+src/dashboard/app.py:2499:        with st.form("settings_db"):
+/home/user/sentinelpi/src/dashboard/app.py-2500-            db = raw.get("database", {})
+/home/user/sentinelpi/src/dashboard/app.py-2501-            db_path = st.text_input("Chemin DB", value=db.get("path", "data/sentinelpi.db"))
+--
+src/dashboard/app.py-2505-                new_config["database"] = {"path": db_path, "echo": db_echo}
+src/dashboard/app.py-2506-                try:
+src/dashboard/app.py:2507:                    _save_settings_yaml(new_config)
+/home/user/sentinelpi/src/dashboard/app.py-2508-                    st.success("Parametres DB sauvegardes !")
+src/dashboard/app.py-2509-                except Exception as e:
+--
+/home/user/sentinelpi/src/dashboard/app.py-2537-
+src/dashboard/app.py-2538-    with tabs[4]:
+src/dashboard/app.py:2539:        with st.form("settings_logs"):
+/home/user/sentinelpi/src/dashboard/app.py-2540-            log = raw.get("logging", {})
+/home/user/sentinelpi/src/dashboard/app.py-2541-            col1, col2 = st.columns(2)
+--
+/home/user/sentinelpi/src/dashboard/app.py-2556-                }
+src/dashboard/app.py-2557-                try:
+src/dashboard/app.py:2558:                    _save_settings_yaml(new_config)
+/home/user/sentinelpi/src/dashboard/app.py-2559-                    st.success("Parametres logs sauvegardes !")
+src/dashboard/app.py-2560-                except Exception as e:
+--
+/home/user/sentinelpi/src/dashboard/app.py-2562-
+src/dashboard/app.py-2563-    with tabs[5]:
+src/dashboard/app.py:2564:        with st.form("settings_maint"):
+/home/user/sentinelpi/src/dashboard/app.py-2565-            maint = raw.get("maintenance", {})
+/home/user/sentinelpi/src/dashboard/app.py-2566-            col1, col2 = st.columns(2)
+--
+/home/user/sentinelpi/src/dashboard/app.py-2580-                }
+src/dashboard/app.py-2581-                try:
+src/dashboard/app.py:2582:                    _save_settings_yaml(new_config)
+/home/user/sentinelpi/src/dashboard/app.py-2583-                    st.success("Parametres maintenance sauvegardes !")
+src/dashboard/app.py-2584-                except Exception as e:
+--
+src/dashboard/app.py-2614-                    if st.form_submit_button("🔒 Definir", use_container_width=True):
+src/dashboard/app.py-2615-                        if new_pw and new_pw == confirm_pw:
+src/dashboard/app.py:2616:                            new_config = _load_settings_yaml()
+/home/user/sentinelpi/src/dashboard/app.py-2617-                            new_config.setdefault("dashboard", {})["password_hash"] = _hash_password(new_pw)
+src/dashboard/app.py-2618-                            try:
+src/dashboard/app.py:2619:                                _save_settings_yaml(new_config)
+/home/user/sentinelpi/src/dashboard/app.py-2620-                                st.success("Mot de passe mis a jour !")
+src/dashboard/app.py-2621-                            except Exception as e:
+--
+src/dashboard/app.py-2627-                with col_pw2:
+src/dashboard/app.py-2628-                    if st.form_submit_button("🔓 Supprimer", use_container_width=True):
+src/dashboard/app.py:2629:                        new_config = _load_settings_yaml()
+/home/user/sentinelpi/src/dashboard/app.py-2630-                        new_config.setdefault("dashboard", {}).pop("password_hash", None)
+src/dashboard/app.py-2631-                        try:
+src/dashboard/app.py:2632:                            _save_settings_yaml(new_config)
+/home/user/sentinelpi/src/dashboard/app.py-2633-                            st.success("Mot de passe supprime.")
+src/dashboard/app.py-2634-                        except Exception as e:
+--
+/home/user/sentinelpi/src/dashboard/app.py-2673-
+/home/user/sentinelpi/src/dashboard/app.py-2674-
+src/dashboard/app.py:2675:def render_login_page() -> None:
+/home/user/sentinelpi/src/dashboard/app.py-2676-    """Render the login page."""
+/home/user/sentinelpi/src/dashboard/app.py-2677-    st.markdown(f"### {APP_ICON} {APP_NAME}")
+--
+src/dashboard/app.py-2684-    with col1:
+src/dashboard/app.py-2685-        if st.button("🔓 Se connecter", use_container_width=True, type="primary"):
+src/dashboard/app.py:2686:            raw = _load_settings_yaml()
+/home/user/sentinelpi/src/dashboard/app.py-2687-            stored_hash = raw.get("dashboard", {}).get("password_hash", "")
+src/dashboard/app.py-2688-            if stored_hash and _check_password(password, stored_hash):
+--
+/home/user/sentinelpi/src/dashboard/app.py-2699-
+/home/user/sentinelpi/src/dashboard/app.py-2700-
+src/dashboard/app.py:2701:def render_docs_page() -> None:
+/home/user/sentinelpi/src/dashboard/app.py-2702-    """Render the documentation page."""
+/home/user/sentinelpi/src/dashboard/app.py-2703-    st.header("📚 Documentation")
+--
+/home/user/sentinelpi/src/dashboard/app.py-3131-        ```
+/home/user/sentinelpi/src/dashboard/app.py-3132-        config/
+src/dashboard/app.py:3133:        ├── settings.yaml    # Parametres generaux
+/home/user/sentinelpi/src/dashboard/app.py-3134-        ├── sources.yaml     # Sources de donnees
+/home/user/sentinelpi/src/dashboard/app.py-3135-        ├── filters.yaml     # Regles de filtrage
+--
+/home/user/sentinelpi/src/dashboard/app.py-3137-        ```
+/home/user/sentinelpi/src/dashboard/app.py-3138-
+src/dashboard/app.py:3139:        ### settings.yaml
+/home/user/sentinelpi/src/dashboard/app.py-3140-
+/home/user/sentinelpi/src/dashboard/app.py-3141-        ```yaml
+--
+src/dashboard/app.py-3350-        font-size: 14px;
+/home/user/sentinelpi/src/dashboard/app.py-3351-    }
+src/dashboard/app.py:3352:    /* Modern sidebar nav buttons */
+/home/user/sentinelpi/src/dashboard/app.py-3353-    section[data-testid="stSidebar"] .stButton > button {
+src/dashboard/app.py-3354-        border: none !important;
+--
+src/dashboard/app.py-3374-        text-align: left !important;
+/home/user/sentinelpi/src/dashboard/app.py-3375-    }
+src/dashboard/app.py:3376:    /* Hide default sidebar decoration */
+/home/user/sentinelpi/src/dashboard/app.py-3377-    section[data-testid="stSidebar"] hr {
+src/dashboard/app.py-3378-        margin: 0.3rem 0 !important;
+--
+/home/user/sentinelpi/src/dashboard/app.py-3396-
+/home/user/sentinelpi/src/dashboard/app.py-3397-    # Check if password protection is configured
+src/dashboard/app.py:3398:    raw = _load_settings_yaml()
+/home/user/sentinelpi/src/dashboard/app.py-3399-    password_hash = raw.get("dashboard", {}).get("password_hash", "")
+/home/user/sentinelpi/src/dashboard/app.py-3400-
+--
+/home/user/sentinelpi/src/dashboard/app.py-3414-    read_only = st.session_state.get("read_only", False)
+/home/user/sentinelpi/src/dashboard/app.py-3415-
+src/dashboard/app.py:3416:    # Render sidebar and get selected page
+src/dashboard/app.py:3417:    page = render_sidebar()
+/home/user/sentinelpi/src/dashboard/app.py-3418-
+/home/user/sentinelpi/src/dashboard/app.py-3419-    # Render selected page
+--
+src/dashboard/app.py-3428-    elif page == "stats":
+/home/user/sentinelpi/src/dashboard/app.py-3429-        render_stats_page()
+src/dashboard/app.py:3430:    elif page == "settings" and not read_only:
+src/dashboard/app.py:3431:        render_settings_page()
+src/dashboard/app.py-3432-    elif page == "docs":
+/home/user/sentinelpi/src/dashboard/app.py-3433-        render_docs_page()
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-15-
+/home/user/sentinelpi/src/dashboard/components/stats.py-16-
+src/dashboard/components/stats.py:17:def render_metrics_row(
+src/dashboard/components/stats.py-18-    items_count: int = 0,
+src/dashboard/components/stats.py-19-    alerts_count: int = 0,
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-67-
+/home/user/sentinelpi/src/dashboard/components/stats.py-68-
+src/dashboard/components/stats.py:69:def render_items_by_day_chart(
+src/dashboard/components/stats.py-70-    data: list[dict[str, Any]] | None = None,
+src/dashboard/components/stats.py-71-    days: int = 7,
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-100-
+/home/user/sentinelpi/src/dashboard/components/stats.py-101-
+src/dashboard/components/stats.py:102:def render_items_by_source_chart(
+src/dashboard/components/stats.py-103-    data: list[dict[str, Any]] | None = None,
+src/dashboard/components/stats.py-104-) -> None:
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-122-
+/home/user/sentinelpi/src/dashboard/components/stats.py-123-
+src/dashboard/components/stats.py:124:def render_items_by_category_chart(
+src/dashboard/components/stats.py-125-    data: list[dict[str, Any]] | None = None,
+src/dashboard/components/stats.py-126-) -> None:
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-141-
+/home/user/sentinelpi/src/dashboard/components/stats.py-142-
+src/dashboard/components/stats.py:143:def render_alerts_by_severity_chart(
+src/dashboard/components/stats.py-144-    data: dict[str, int] | None = None,
+src/dashboard/components/stats.py-145-) -> None:
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-166-
+/home/user/sentinelpi/src/dashboard/components/stats.py-167-
+src/dashboard/components/stats.py:168:def render_top_keywords(
+src/dashboard/components/stats.py-169-    keywords: list[tuple[str, int]] | None = None,
+src/dashboard/components/stats.py-170-    max_keywords: int = 20,
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-199-
+/home/user/sentinelpi/src/dashboard/components/stats.py-200-
+src/dashboard/components/stats.py:201:def render_top_items(
+src/dashboard/components/stats.py-202-    items: list[dict[str, Any]] | None = None,
+src/dashboard/components/stats.py-203-    max_items: int = 10,
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-241-
+/home/user/sentinelpi/src/dashboard/components/stats.py-242-
+src/dashboard/components/stats.py:243:def render_collection_stats(
+src/dashboard/components/stats.py-244-    total_collected: int = 0,
+src/dashboard/components/stats.py-245-    total_new: int = 0,
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-278-
+/home/user/sentinelpi/src/dashboard/components/stats.py-279-
+src/dashboard/components/stats.py:280:def render_system_stats(
+src/dashboard/components/stats.py-281-    db_size_mb: float = 0,
+src/dashboard/components/stats.py-282-    cache_size_mb: float = 0,
+--
+/home/user/sentinelpi/src/dashboard/components/stats.py-314-
+/home/user/sentinelpi/src/dashboard/components/stats.py-315-
+src/dashboard/components/stats.py:316:def render_health_indicators(
+src/dashboard/components/stats.py-317-    sources_healthy: int = 0,
+src/dashboard/components/stats.py-318-    sources_error: int = 0,
+--
+/home/user/sentinelpi/src/dashboard/components/alerts.py-58-
+/home/user/sentinelpi/src/dashboard/components/alerts.py-59-
+src/dashboard/components/alerts.py:60:def render_alert_card(
+src/dashboard/components/alerts.py-61-    alert: Alert | dict[str, Any],
+src/dashboard/components/alerts.py-62-    show_actions: bool = True,
+--
+/home/user/sentinelpi/src/dashboard/components/alerts.py-165-
+/home/user/sentinelpi/src/dashboard/components/alerts.py-166-
+src/dashboard/components/alerts.py:167:def render_alerts_list(
+src/dashboard/components/alerts.py-168-    alerts: Sequence[Alert | dict[str, Any]],
+src/dashboard/components/alerts.py-169-    page_size: int = 20,
+--
+/home/user/sentinelpi/src/dashboard/components/alerts.py-219-
+/home/user/sentinelpi/src/dashboard/components/alerts.py-220-
+src/dashboard/components/alerts.py:221:def render_alerts_summary(
+src/dashboard/components/alerts.py-222-    total: int = 0,
+src/dashboard/components/alerts.py-223-    critical: int = 0,
+--
+/home/user/sentinelpi/src/dashboard/components/alerts.py-262-
+/home/user/sentinelpi/src/dashboard/components/alerts.py-263-
+src/dashboard/components/alerts.py:264:def render_notification_status() -> None:
+/home/user/sentinelpi/src/dashboard/components/alerts.py-265-    """Render notification channels status."""
+/home/user/sentinelpi/src/dashboard/components/alerts.py-266-    st.subheader("📤 Canaux de notification")
+/home/user/sentinelpi/src/dashboard/components/alerts.py-267-
+src/dashboard/components/alerts.py:268:    from src.utils.config import get_settings, load_alerts_config
+/home/user/sentinelpi/src/dashboard/components/alerts.py-269-
+src/dashboard/components/alerts.py:270:    settings = get_settings()
+/home/user/sentinelpi/src/dashboard/components/alerts.py-271-    alerts_config = load_alerts_config()
+/home/user/sentinelpi/src/dashboard/components/alerts.py-272-    channels = alerts_config.get("alerting", {}).get("channels", {})
+--
+src/dashboard/components/alerts.py-276-    with col1:
+/home/user/sentinelpi/src/dashboard/components/alerts.py-277-        telegram_enabled = channels.get("telegram", {}).get("enabled", False)
+src/dashboard/components/alerts.py:278:        telegram_configured = bool(settings.telegram_bot_token)
+/home/user/sentinelpi/src/dashboard/components/alerts.py-279-
+src/dashboard/components/alerts.py-280-        if telegram_enabled and telegram_configured:
+--
+src/dashboard/components/alerts.py-287-    with col2:
+/home/user/sentinelpi/src/dashboard/components/alerts.py-288-        email_enabled = channels.get("email", {}).get("enabled", False)
+src/dashboard/components/alerts.py:289:        email_configured = bool(settings.email_user)
+/home/user/sentinelpi/src/dashboard/components/alerts.py-290-
+src/dashboard/components/alerts.py-291-        if email_enabled and email_configured:
+--
+src/dashboard/components/alerts.py-298-    with col3:
+/home/user/sentinelpi/src/dashboard/components/alerts.py-299-        webhook_enabled = channels.get("webhook", {}).get("enabled", False)
+src/dashboard/components/alerts.py:300:        webhook_configured = bool(settings.webhook_url)
+/home/user/sentinelpi/src/dashboard/components/alerts.py-301-
+src/dashboard/components/alerts.py-302-        if webhook_enabled and webhook_configured:
+--
+/home/user/sentinelpi/src/dashboard/components/alerts.py-308-
+/home/user/sentinelpi/src/dashboard/components/alerts.py-309-
+src/dashboard/components/alerts.py:310:def render_test_notification_form() -> None:
+/home/user/sentinelpi/src/dashboard/components/alerts.py-311-    """Render a form to send test notifications."""
+src/dashboard/components/alerts.py-312-    with st.expander("🧪 Envoyer une notification de test"):
+--
+/home/user/sentinelpi/src/dashboard/components/sources.py-175-
+/home/user/sentinelpi/src/dashboard/components/sources.py-176-
+src/dashboard/components/sources.py:177:def render_source_card(
+src/dashboard/components/sources.py-178-    source: Source | dict[str, Any],
+src/dashboard/components/sources.py-179-    show_actions: bool = True,
+--
+/home/user/sentinelpi/src/dashboard/components/sources.py-291-
+/home/user/sentinelpi/src/dashboard/components/sources.py-292-
+src/dashboard/components/sources.py:293:def render_sources_table(
+src/dashboard/components/sources.py-294-    sources: Sequence[Source | dict[str, Any]],
+src/dashboard/components/sources.py-295-) -> None:
+--
+/home/user/sentinelpi/src/dashboard/components/sources.py-330-
+/home/user/sentinelpi/src/dashboard/components/sources.py-331-
+src/dashboard/components/sources.py:332:def render_add_source_form() -> dict[str, Any] | None:
+/home/user/sentinelpi/src/dashboard/components/sources.py-333-    """
+/home/user/sentinelpi/src/dashboard/components/sources.py-334-    Render the add source form.
+--
+/home/user/sentinelpi/src/dashboard/components/sources.py-459-
+/home/user/sentinelpi/src/dashboard/components/sources.py-460-
+src/dashboard/components/sources.py:461:def render_source_stats(sources: Sequence[Source | dict[str, Any]]) -> None:
+/home/user/sentinelpi/src/dashboard/components/sources.py-462-    """
+/home/user/sentinelpi/src/dashboard/components/sources.py-463-    Render source statistics.
+--
+/home/user/sentinelpi/src/dashboard/components/statistics.py-18-
+/home/user/sentinelpi/src/dashboard/components/statistics.py-19-
+src/dashboard/components/statistics.py:20:def render_statistics_page(run_async_fn) -> None:
+/home/user/sentinelpi/src/dashboard/components/statistics.py-21-    """
+/home/user/sentinelpi/src/dashboard/components/statistics.py-22-    Render the advanced statistics page.
+--
+/home/user/sentinelpi/src/dashboard/components/statistics.py-75-
+/home/user/sentinelpi/src/dashboard/components/statistics.py-76-
+src/dashboard/components/statistics.py:77:def render_kpi_cards(stats: dict) -> None:
+/home/user/sentinelpi/src/dashboard/components/statistics.py-78-    """Render KPI cards at the top."""
+/home/user/sentinelpi/src/dashboard/components/statistics.py-79-    col1, col2, col3, col4, col5 = st.columns(5)
+--
+/home/user/sentinelpi/src/dashboard/components/statistics.py-119-
+/home/user/sentinelpi/src/dashboard/components/statistics.py-120-
+src/dashboard/components/statistics.py:121:def render_trends_tab(stats: dict, period: str) -> None:
+/home/user/sentinelpi/src/dashboard/components/statistics.py-122-    """Render the trends charts tab."""
+/home/user/sentinelpi/src/dashboard/components/statistics.py-123-    col1, col2 = st.columns(2)
+--
+/home/user/sentinelpi/src/dashboard/components/statistics.py-188-
+/home/user/sentinelpi/src/dashboard/components/statistics.py-189-
+src/dashboard/components/statistics.py:190:def render_sources_tab(stats: dict) -> None:
+/home/user/sentinelpi/src/dashboard/components/statistics.py-191-    """Render the sources analysis tab."""
+/home/user/sentinelpi/src/dashboard/components/statistics.py-192-    col1, col2 = st.columns(2)
+--
+/home/user/sentinelpi/src/dashboard/components/statistics.py-253-
+/home/user/sentinelpi/src/dashboard/components/statistics.py-254-
+src/dashboard/components/statistics.py:255:def render_keywords_tab(stats: dict, run_async_fn, period: str) -> None:
+/home/user/sentinelpi/src/dashboard/components/statistics.py-256-    """Render the keywords analysis tab."""
+/home/user/sentinelpi/src/dashboard/components/statistics.py-257-    col1, col2 = st.columns(2)
+--
+/home/user/sentinelpi/src/dashboard/components/statistics.py-331-
+/home/user/sentinelpi/src/dashboard/components/statistics.py-332-
+src/dashboard/components/statistics.py:333:def render_alerts_tab(stats: dict) -> None:
+/home/user/sentinelpi/src/dashboard/components/statistics.py-334-    """Render the alerts analysis tab."""
+/home/user/sentinelpi/src/dashboard/components/statistics.py-335-    col1, col2 = st.columns(2)
+--
+/home/user/sentinelpi/src/dashboard/components/filters.py-66-
+/home/user/sentinelpi/src/dashboard/components/filters.py-67-
+src/dashboard/components/filters.py:68:def render_filter_card(
+src/dashboard/components/filters.py-69-    filter_obj: Filter | dict[str, Any],
+src/dashboard/components/filters.py-70-    show_actions: bool = True,
+--
+/home/user/sentinelpi/src/dashboard/components/filters.py-199-
+/home/user/sentinelpi/src/dashboard/components/filters.py-200-
+src/dashboard/components/filters.py:201:def render_filters_table(
+src/dashboard/components/filters.py-202-    filters: Sequence[Filter | dict[str, Any]],
+src/dashboard/components/filters.py-203-) -> None:
+--
+/home/user/sentinelpi/src/dashboard/components/filters.py-236-
+/home/user/sentinelpi/src/dashboard/components/filters.py-237-
+src/dashboard/components/filters.py:238:def render_add_filter_form() -> dict[str, Any] | None:
+/home/user/sentinelpi/src/dashboard/components/filters.py-239-    """
+/home/user/sentinelpi/src/dashboard/components/filters.py-240-    Render the add filter form.
+--
+/home/user/sentinelpi/src/dashboard/components/filters.py-412-
+/home/user/sentinelpi/src/dashboard/components/filters.py-413-
+src/dashboard/components/filters.py:414:def render_filter_stats(filters: Sequence[Filter | dict[str, Any]]) -> None:
+/home/user/sentinelpi/src/dashboard/components/filters.py-415-    """
+/home/user/sentinelpi/src/dashboard/components/filters.py-416-    Render filter statistics.
+--
+/home/user/sentinelpi/src/dashboard/components/feed.py-187-
+/home/user/sentinelpi/src/dashboard/components/feed.py-188-
+src/dashboard/components/feed.py:189:def render_item_card(
+src/dashboard/components/feed.py-190-    item: Item | dict[str, Any],
+src/dashboard/components/feed.py-191-    source: Source | dict[str, Any] | None = None,
+--
+/home/user/sentinelpi/src/dashboard/components/feed.py-523-
+/home/user/sentinelpi/src/dashboard/components/feed.py-524-
+src/dashboard/components/feed.py:525:def render_feed(
+src/dashboard/components/feed.py-526-    items: Sequence[Item | dict[str, Any]],
+src/dashboard/components/feed.py-527-    sources: dict[str, Source | dict[str, Any]] | None = None,
+--
+/home/user/sentinelpi/src/dashboard/components/feed.py-585-
+/home/user/sentinelpi/src/dashboard/components/feed.py-586-
+src/dashboard/components/feed.py:587:def render_compact_feed(
+src/dashboard/components/feed.py-588-    items: Sequence[Item | dict[str, Any]],
+src/dashboard/components/feed.py-589-    max_items: int = 10,
+src/dashboard/components/feed.py-590-) -> None:
+src/dashboard/components/feed.py:591:    """Render a compact feed (for widgets/sidebars)."""
+src/dashboard/components/feed.py-592-    if not items:
+/home/user/sentinelpi/src/dashboard/components/feed.py-593-        st.caption("Aucun item recent")

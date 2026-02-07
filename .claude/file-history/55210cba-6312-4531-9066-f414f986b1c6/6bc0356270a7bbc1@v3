@@ -1,0 +1,29 @@
+# Configuration des concurrents à surveiller
+# Entreprises de test pour démonstration
+
+competitors:
+  - siren: "552049447"
+    nom: "Air France"
+    priorite: 1
+    site_web: "https://www.airfrance.fr"
+    mots_cles_presse:
+      - "Air France"
+      - "Air France-KLM"
+    notes: "Compagnie aérienne nationale"
+
+  - siren: "434394883"
+    nom: "Blablacar"
+    priorite: 2
+    site_web: "https://www.blablacar.fr"
+    mots_cles_presse:
+      - "BlaBlaCar"
+      - "Blablacar"
+    notes: "Covoiturage - Licorne française"
+
+  - siren: "519688156"
+    nom: "Doctolib"
+    priorite: 1
+    site_web: "https://www.doctolib.fr"
+    mots_cles_presse:
+      - "Doctolib"
+    notes: "Prise de RDV médicaux - Licorne"

@@ -1,0 +1,251 @@
+"""Tests du scheduler StratWatch."""
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime
+
+import src.scheduler
+
+from src.scheduler import StratWatchScheduler
+
+
+class TestStratWatchScheduler:
+    """Tests de la classe StratWatchScheduler."""
+
+    def test_init(self):
+        """Test d'initialisation du scheduler."""
+        scheduler = StratWatchScheduler()
+        assert scheduler._running is False
+        assert scheduler._scheduler is not None
+
+    def test_configure_jobs(self):
+        """Test de configuration des tâches."""
+        scheduler = StratWatchScheduler()
+        scheduler.configure_jobs()
+
+        jobs = scheduler.get_jobs()
+        assert len(jobs) > 0
+
+        # Vérifier les tâches essentielles
+        job_ids = [job["id"] for job in jobs]
+        assert "collect_legal" in job_ids
+        assert "collect_bodacc" in job_ids
+        assert "collect_regulations" in job_ids
+        assert "check_alerts" in job_ids
+        assert "send_notifications" in job_ids
+        assert "daily_digest" in job_ids
+
+    def test_get_jobs(self):
+        """Test de récupération des tâches."""
+        scheduler = StratWatchScheduler()
+        scheduler.configure_jobs()
+
+        jobs = scheduler.get_jobs()
+        assert isinstance(jobs, list)
+
+        for job in jobs:
+            assert "id" in job
+            assert "name" in job
+            assert "trigger" in job
+            assert "next_run" in job
+
+    def test_get_interval_minutes(self):
+        """Test de récupération des intervalles."""
+        scheduler = StratWatchScheduler()
+        # Par défaut, retourne 60 si pas trouvé
+        interval = scheduler._get_interval_minutes("unknown_task")
+        assert interval == 60
+
+
+class TestSchedulerTasks:
+    """Tests des tâches du scheduler."""
+
+    @pytest.mark.asyncio
+    async def test_task_collect_legal(self):
+        """Test de la tâche de collecte légale."""
+        scheduler = StratWatchScheduler()
+
+        # Patch où les imports sont faits
+        with patch("src.collectors.PappersCollector") as mock_collector_class, \
+             patch("src.storage.db") as mock_db, \
+             patch("src.config.load_competitors") as mock_load:
+
+            # Setup mocks
+            mock_db.is_initialized = True
+            mock_db.init = AsyncMock()
+            mock_session = AsyncMock()
+            mock_db.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.session.return_value.__aexit__ = AsyncMock()
+
+            mock_collector = AsyncMock()
+            mock_collector.__aenter__ = AsyncMock(return_value=mock_collector)
+            mock_collector.__aexit__ = AsyncMock()
+            mock_collector.collect_with_details = AsyncMock(return_value=MagicMock(items_saved=5))
+            mock_collector_class.return_value = mock_collector
+
+            mock_load.return_value = MagicMock(competitors=[
+                MagicMock(siren="123456789", nom="Test Company")
+            ])
+
+            await scheduler.task_collect_legal()
+
+    @pytest.mark.asyncio
+    async def test_task_collect_bodacc(self):
+        """Test de la tâche de collecte BODACC."""
+        scheduler = StratWatchScheduler()
+
+        with patch("src.collectors.BodaccCollector") as mock_collector_class, \
+             patch("src.storage.db") as mock_db:
+
+            mock_db.is_initialized = True
+            mock_db.init = AsyncMock()
+            mock_session = AsyncMock()
+            mock_db.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.session.return_value.__aexit__ = AsyncMock()
+
+            mock_collector = AsyncMock()
+            mock_collector.__aenter__ = AsyncMock(return_value=mock_collector)
+            mock_collector.__aexit__ = AsyncMock()
+            mock_collector.collect_and_save = AsyncMock(return_value=MagicMock(
+                items_collected=10, items_saved=3
+            ))
+            mock_collector_class.return_value = mock_collector
+
+            await scheduler.task_collect_bodacc()
+
+    @pytest.mark.asyncio
+    async def test_task_collect_regulations(self):
+        """Test de la tâche de collecte réglementaire."""
+        scheduler = StratWatchScheduler()
+
+        with patch("src.collectors.LegifranceCollector") as mock_collector_class, \
+             patch("src.storage.db") as mock_db:
+
+            mock_db.is_initialized = True
+            mock_db.init = AsyncMock()
+            mock_session = AsyncMock()
+            mock_db.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.session.return_value.__aexit__ = AsyncMock()
+
+            mock_collector = AsyncMock()
+            mock_collector.__aenter__ = AsyncMock(return_value=mock_collector)
+            mock_collector.__aexit__ = AsyncMock()
+            mock_collector.collect_and_save = AsyncMock(return_value=MagicMock(
+                items_collected=5, items_saved=2
+            ))
+            mock_collector_class.return_value = mock_collector
+
+            await scheduler.task_collect_regulations()
+
+    @pytest.mark.asyncio
+    async def test_task_check_alerts(self):
+        """Test de la tâche de vérification des alertes."""
+        scheduler = StratWatchScheduler()
+
+        with patch("src.alerting.AlertEngine") as mock_engine_class, \
+             patch("src.storage.db") as mock_db:
+
+            mock_db.is_initialized = True
+            mock_db.init = AsyncMock()
+            mock_session = AsyncMock()
+            mock_db.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.session.return_value.__aexit__ = AsyncMock()
+
+            mock_engine = MagicMock()
+            mock_engine.run_all_checks = AsyncMock(return_value=[])
+            mock_engine_class.return_value = mock_engine
+
+            await scheduler.task_check_alerts()
+
+    @pytest.mark.asyncio
+    async def test_task_send_notifications(self):
+        """Test de la tâche d'envoi des notifications."""
+        scheduler = StratWatchScheduler()
+
+        with patch("src.alerting.NotificationDispatcher") as mock_dispatcher_class, \
+             patch("src.storage.db") as mock_db:
+
+            mock_db.is_initialized = True
+            mock_db.init = AsyncMock()
+            mock_session = AsyncMock()
+            mock_db.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.session.return_value.__aexit__ = AsyncMock()
+
+            mock_dispatcher = MagicMock()
+            mock_dispatcher.process_pending_alerts = AsyncMock(return_value={
+                "total": 5, "sent": 4, "failed": 1
+            })
+            mock_dispatcher_class.return_value = mock_dispatcher
+
+            await scheduler.task_send_notifications()
+
+    @pytest.mark.asyncio
+    async def test_task_generate_weekly_report(self):
+        """Test de la tâche de génération du rapport."""
+        scheduler = StratWatchScheduler()
+
+        with patch("src.reporting.ReportGenerator") as mock_generator_class, \
+             patch("src.storage.db") as mock_db:
+
+            mock_db.is_initialized = True
+            mock_db.init = AsyncMock()
+            mock_session = AsyncMock()
+            mock_db.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.session.return_value.__aexit__ = AsyncMock()
+
+            mock_generator = MagicMock()
+            mock_generator.generate_weekly_report = AsyncMock(return_value=["/path/to/report.html"])
+            mock_generator_class.return_value = mock_generator
+
+            await scheduler.task_generate_weekly_report()
+
+
+class TestSchedulerLifecycle:
+    """Tests du cycle de vie du scheduler."""
+
+    @pytest.mark.asyncio
+    async def test_start_stop(self):
+        """Test du démarrage et arrêt du scheduler."""
+        scheduler = StratWatchScheduler()
+
+        with patch("src.storage.db") as mock_db:
+            mock_db.init = AsyncMock()
+            mock_db.create_tables = AsyncMock()
+            mock_db.close = AsyncMock()
+
+            await scheduler.start()
+            assert scheduler._running is True
+
+            await scheduler.stop()
+            assert scheduler._running is False
+
+    @pytest.mark.asyncio
+    async def test_start_twice(self):
+        """Test de double démarrage."""
+        scheduler = StratWatchScheduler()
+
+        with patch("src.storage.db") as mock_db:
+            mock_db.init = AsyncMock()
+            mock_db.create_tables = AsyncMock()
+            mock_db.close = AsyncMock()
+
+            await scheduler.start()
+            # Deuxième démarrage ne fait rien
+            await scheduler.start()
+            assert scheduler._running is True
+
+            await scheduler.stop()
+
+    @pytest.mark.asyncio
+    async def test_run_job_now(self):
+        """Test d'exécution immédiate d'une tâche."""
+        scheduler = StratWatchScheduler()
+        scheduler.configure_jobs()
+
+        # Tâche existante
+        result = await scheduler.run_job_now("collect_legal")
+        assert result is True
+
+        # Tâche inexistante
+        result = await scheduler.run_job_now("nonexistent_job")
+        assert result is False

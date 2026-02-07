@@ -1,0 +1,95 @@
+# SentinelPi - Configuration générale
+# ==================================================
+
+app:
+  name: "SentinelPi"
+  version: "1.0.0"
+  timezone: "Europe/Paris"
+
+# Base de données SQLite
+database:
+  path: "data/sentinelpi.db"
+  echo: false  # Afficher les requêtes SQL (debug)
+
+# Configuration HTTP
+http:
+  timeout: 30
+  max_retries: 3
+  retry_delay: 5
+  user_agent: "SentinelPi/1.0 (Raspberry Pi; Veille automatisée)"
+  # Rate limiting global (requêtes par seconde)
+  rate_limit: 2
+  cache:
+    enabled: true
+    directory: "data/cache"
+    ttl_seconds: 300  # 5 minutes
+
+# Collecte
+collection:
+  # Intervalle par défaut si non spécifié dans la source
+  default_interval_minutes: 60
+  # Nombre max de collecteurs en parallèle
+  max_concurrent_collectors: 3
+  # Nombre max d'items à garder par source
+  max_items_per_source: 100
+  # Fenêtre de déduplication (jours)
+  dedup_window_days: 30
+  # Timeout par collecteur (secondes)
+  collector_timeout: 120
+
+# Traitement
+processing:
+  # Extraction automatique de mots-clés
+  extract_keywords: true
+  max_keywords: 10
+  # Détection de langue
+  detect_language: true
+  # Analyse de sentiment (désactivé par défaut - consomme des ressources)
+  analyze_sentiment: false
+  # Résumé automatique (désactivé par défaut)
+  summarize: false
+  summarize_max_length: 200
+
+# Scheduler (orchestrateur de tâches)
+scheduler:
+  enabled: true
+  # Intervalle de vérification des jobs à exécuter
+  check_interval_seconds: 60
+  # Heure du rapport quotidien (HH:MM)
+  daily_report_time: "08:00"
+  # Jour du rapport hebdomadaire (0=lundi, 6=dimanche)
+  weekly_report_day: 0
+  weekly_report_time: "09:00"
+
+# Dashboard Streamlit
+dashboard:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8501
+  # Nombre d'items par page
+  items_per_page: 50
+  # Rafraîchissement auto (secondes, 0 = désactivé)
+  auto_refresh_seconds: 60
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "logs/sentinelpi.log"
+  # Rotation des logs
+  rotation: "10 MB"
+  retention: "30 days"
+  # Format des logs
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {name}:{function}:{line} | {message}"
+  # Logs console colorés
+  colorize: true
+
+# Maintenance
+maintenance:
+  # Nettoyage automatique des anciens items
+  cleanup_enabled: true
+  # Garder les items pendant N jours
+  retention_days: 90
+  # Heure du nettoyage quotidien
+  cleanup_time: "03:00"
+  # Vacuum de la base SQLite (hebdomadaire)
+  vacuum_enabled: true

@@ -1,0 +1,334 @@
+"""Routes API pour les concurrents."""
+
+from datetime import date, datetime
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+
+from src.storage import db
+from src.storage.models import (
+    Competitor, Dirigeant, Financial, JobOffer,
+    FundingRound, Patent, Trademark, NewsMention, BodaccAnnouncement
+)
+
+router = APIRouter()
+
+
+# =============================================================================
+# Modèles Pydantic
+# =============================================================================
+
+class CompetitorBase(BaseModel):
+    """Modèle de base pour un concurrent."""
+    siren: str = Field(..., min_length=9, max_length=9)
+    nom: str
+    nom_commercial: Optional[str] = None
+    site_web: Optional[str] = None
+    priorite: int = Field(default=1, ge=1, le=3)
+    notes: Optional[str] = None
+
+
+class CompetitorCreate(CompetitorBase):
+    """Modèle pour créer un concurrent."""
+    pass
+
+
+class CompetitorUpdate(BaseModel):
+    """Modèle pour mettre à jour un concurrent."""
+    nom: Optional[str] = None
+    nom_commercial: Optional[str] = None
+    site_web: Optional[str] = None
+    priorite: Optional[int] = Field(default=None, ge=1, le=3)
+    notes: Optional[str] = None
+    actif: Optional[bool] = None
+
+
+class CompetitorResponse(CompetitorBase):
+    """Modèle de réponse pour un concurrent."""
+    id: str
+    siret_siege: Optional[str] = None
+    forme_juridique: Optional[str] = None
+    date_creation: Optional[date] = None
+    capital_social: Optional[int] = None
+    code_naf: Optional[str] = None
+    adresse_siege: Optional[str] = None
+    actif: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DirigeantResponse(BaseModel):
+    """Modèle de réponse pour un dirigeant."""
+    id: str
+    nom: str
+    prenom: Optional[str] = None
+    fonction: str
+    date_nomination: Optional[date] = None
+    actif: bool
+
+    class Config:
+        from_attributes = True
+
+
+class FinancialResponse(BaseModel):
+    """Modèle de réponse pour les données financières."""
+    id: str
+    annee: int
+    chiffre_affaires: Optional[int] = None
+    resultat_net: Optional[int] = None
+    effectif: Optional[int] = None
+    source: str
+
+    class Config:
+        from_attributes = True
+
+
+class JobOfferResponse(BaseModel):
+    """Modèle de réponse pour une offre d'emploi."""
+    id: str
+    titre: str
+    departement: Optional[str] = None
+    lieu: Optional[str] = None
+    type_contrat: Optional[str] = None
+    date_publication: Optional[date] = None
+    date_detection: datetime
+    url: str
+    source: str
+    active: bool
+
+    class Config:
+        from_attributes = True
+
+
+class CompetitorDetailResponse(CompetitorResponse):
+    """Modèle de réponse détaillé pour un concurrent."""
+    dirigeants: list[DirigeantResponse] = []
+    financials: list[FinancialResponse] = []
+    job_offers_count: int = 0
+    patents_count: int = 0
+    trademarks_count: int = 0
+    news_mentions_count: int = 0
+
+
+# =============================================================================
+# Routes
+# =============================================================================
+
+@router.get("", response_model=list[CompetitorResponse])
+async def list_competitors(
+    actif: Optional[bool] = Query(None, description="Filtrer par statut actif"),
+    priorite: Optional[int] = Query(None, ge=1, le=3, description="Filtrer par priorité"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Liste tous les concurrents."""
+    async with db.session() as session:
+        query = select(Competitor).order_by(Competitor.priorite, Competitor.nom)
+
+        if actif is not None:
+            query = query.where(Competitor.actif == actif)
+        if priorite is not None:
+            query = query.where(Competitor.priorite == priorite)
+
+        query = query.limit(limit).offset(offset)
+        result = await session.execute(query)
+
+        return list(result.scalars().all())
+
+
+@router.get("/{competitor_id}", response_model=CompetitorDetailResponse)
+async def get_competitor(competitor_id: str):
+    """Récupère un concurrent avec ses détails."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Competitor).where(Competitor.id == competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+
+        if not competitor:
+            raise HTTPException(status_code=404, detail="Concurrent non trouvé")
+
+        # Charger les relations
+        dirigeants_result = await session.execute(
+            select(Dirigeant).where(
+                Dirigeant.competitor_id == competitor_id,
+                Dirigeant.actif == True
+            )
+        )
+        financials_result = await session.execute(
+            select(Financial).where(Financial.competitor_id == competitor_id)
+            .order_by(Financial.annee.desc())
+        )
+
+        # Comptages
+        jobs_count = await session.execute(
+            select(func.count(JobOffer.id)).where(
+                JobOffer.competitor_id == competitor_id,
+                JobOffer.active == True
+            )
+        )
+        patents_count = await session.execute(
+            select(func.count(Patent.id)).where(Patent.competitor_id == competitor_id)
+        )
+        trademarks_count = await session.execute(
+            select(func.count(Trademark.id)).where(Trademark.competitor_id == competitor_id)
+        )
+        news_count = await session.execute(
+            select(func.count(NewsMention.id)).where(NewsMention.competitor_id == competitor_id)
+        )
+
+        return CompetitorDetailResponse(
+            **{c.name: getattr(competitor, c.name) for c in Competitor.__table__.columns},
+            dirigeants=list(dirigeants_result.scalars().all()),
+            financials=list(financials_result.scalars().all()),
+            job_offers_count=jobs_count.scalar() or 0,
+            patents_count=patents_count.scalar() or 0,
+            trademarks_count=trademarks_count.scalar() or 0,
+            news_mentions_count=news_count.scalar() or 0,
+        )
+
+
+@router.get("/siren/{siren}", response_model=CompetitorResponse)
+async def get_competitor_by_siren(siren: str):
+    """Récupère un concurrent par son SIREN."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Competitor).where(Competitor.siren == siren)
+        )
+        competitor = result.scalar_one_or_none()
+
+        if not competitor:
+            raise HTTPException(status_code=404, detail="Concurrent non trouvé")
+
+        return competitor
+
+
+@router.post("", response_model=CompetitorResponse, status_code=201)
+async def create_competitor(data: CompetitorCreate):
+    """Crée un nouveau concurrent."""
+    from src.storage.models import generate_uuid
+
+    async with db.session() as session:
+        # Vérifier si le SIREN existe déjà
+        existing = await session.execute(
+            select(Competitor).where(Competitor.siren == data.siren)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Ce SIREN existe déjà")
+
+        competitor = Competitor(
+            id=generate_uuid(),
+            **data.model_dump()
+        )
+        session.add(competitor)
+        await session.commit()
+        await session.refresh(competitor)
+
+        return competitor
+
+
+@router.patch("/{competitor_id}", response_model=CompetitorResponse)
+async def update_competitor(competitor_id: str, data: CompetitorUpdate):
+    """Met à jour un concurrent."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Competitor).where(Competitor.id == competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+
+        if not competitor:
+            raise HTTPException(status_code=404, detail="Concurrent non trouvé")
+
+        update_data = data.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(competitor, field, value)
+
+        competitor.updated_at = datetime.now()
+        await session.commit()
+        await session.refresh(competitor)
+
+        return competitor
+
+
+@router.delete("/{competitor_id}", status_code=204)
+async def delete_competitor(competitor_id: str):
+    """Supprime un concurrent (soft delete)."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Competitor).where(Competitor.id == competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+
+        if not competitor:
+            raise HTTPException(status_code=404, detail="Concurrent non trouvé")
+
+        competitor.actif = False
+        competitor.updated_at = datetime.now()
+        await session.commit()
+
+
+@router.get("/{competitor_id}/jobs", response_model=list[JobOfferResponse])
+async def get_competitor_jobs(
+    competitor_id: str,
+    active: Optional[bool] = Query(True),
+    limit: int = Query(50, ge=1, le=100),
+):
+    """Récupère les offres d'emploi d'un concurrent."""
+    async with db.session() as session:
+        query = select(JobOffer).where(JobOffer.competitor_id == competitor_id)
+
+        if active is not None:
+            query = query.where(JobOffer.active == active)
+
+        query = query.order_by(JobOffer.date_detection.desc()).limit(limit)
+        result = await session.execute(query)
+
+        return list(result.scalars().all())
+
+
+@router.get("/{competitor_id}/financials", response_model=list[FinancialResponse])
+async def get_competitor_financials(competitor_id: str):
+    """Récupère les données financières d'un concurrent."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Financial)
+            .where(Financial.competitor_id == competitor_id)
+            .order_by(Financial.annee.desc())
+        )
+
+        return list(result.scalars().all())
+
+
+@router.get("/{competitor_id}/bodacc")
+async def get_competitor_bodacc(
+    competitor_id: str,
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Récupère les annonces BODACC d'un concurrent."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(BodaccAnnouncement)
+            .where(BodaccAnnouncement.competitor_id == competitor_id)
+            .order_by(BodaccAnnouncement.date_publication.desc())
+            .limit(limit)
+        )
+
+        announcements = result.scalars().all()
+        return [
+            {
+                "id": a.id,
+                "numero_annonce": a.numero_annonce,
+                "type_annonce": a.type_annonce,
+                "categorie": a.categorie,
+                "date_publication": a.date_publication,
+                "contenu": a.contenu[:500] + "..." if len(a.contenu) > 500 else a.contenu,
+                "tribunal": a.tribunal,
+                "url": a.url,
+            }
+            for a in announcements
+        ]

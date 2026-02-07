@@ -1,0 +1,122 @@
+2026-02-02T19:30:21.921Z [DEBUG] [init] configureGlobalMTLS starting
+2026-02-02T19:30:21.922Z [DEBUG] [init] configureGlobalMTLS complete
+2026-02-02T19:30:21.922Z [DEBUG] [init] configureGlobalAgents starting
+2026-02-02T19:30:21.923Z [DEBUG] [init] configureGlobalAgents complete
+2026-02-02T19:30:21.941Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-02-02T19:30:21.950Z [DEBUG] [ToolSearch:optimistic] mode=standard, ENABLE_TOOL_SEARCH=undefined, result=false
+2026-02-02T19:30:21.953Z [DEBUG] [STARTUP] Running setup()...
+2026-02-02T19:30:21.955Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-02-02T19:30:21.981Z [DEBUG] Loading skills from: managed=/etc/claude-code/.claude/skills, user=/home/user/.claude/skills, project=[]
+2026-02-02T19:30:21.986Z [DEBUG] Error log sink initialized
+2026-02-02T19:30:22.026Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-02-02T19:30:22.026Z [DEBUG] Total plugin skills loaded: 0
+2026-02-02T19:30:22.026Z [DEBUG] Total plugin commands loaded: 0
+2026-02-02T19:30:22.027Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-02-02T19:30:22.040Z [DEBUG] Loaded 0 unique skills (managed: 0, user: 0, project: 0, legacy commands: 0)
+2026-02-02T19:30:22.040Z [DEBUG] [STARTUP] setup() completed in 87ms
+2026-02-02T19:30:22.040Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-02-02T19:30:22.043Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 1 bundled skills
+2026-02-02T19:30:22.051Z [DEBUG] Total plugin agents loaded: 0
+2026-02-02T19:30:22.052Z [DEBUG] [STARTUP] Commands and agents loaded in 12ms
+2026-02-02T19:30:22.053Z [DEBUG] [STARTUP] Running showSetupScreens()...
+2026-02-02T19:30:22.061Z [DEBUG] [render] initLayout starting
+2026-02-02T19:30:22.061Z [DEBUG] Layout engine: yoga
+2026-02-02T19:30:22.076Z [DEBUG] Acquired PID lock for 2.1.29 (PID 76272)
+2026-02-02T19:30:22.077Z [DEBUG] Acquired PID lock on running version: /home/user/.local/share/claude/versions/2.1.29
+2026-02-02T19:30:22.117Z [DEBUG] [render] initLayout complete
+2026-02-02T19:30:22.129Z [DEBUG] [render] first ink render: 1960ms since process start
+2026-02-02T19:30:22.131Z [DEBUG] [Claude in Chrome] Extension not found in any browser
+2026-02-02T19:30:22.250Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060622250
+2026-02-02T19:30:22.250Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:22.259Z [DEBUG] Temp file written successfully, size: 1116 bytes
+2026-02-02T19:30:22.259Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:22.259Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060622250 to /home/user/.claude.json
+2026-02-02T19:30:22.259Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:22.265Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060622264
+2026-02-02T19:30:22.265Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:22.276Z [DEBUG] Temp file written successfully, size: 1116 bytes
+2026-02-02T19:30:22.276Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:22.276Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060622264 to /home/user/.claude.json
+2026-02-02T19:30:22.276Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:22.291Z [DEBUG] [keybindings] KeybindingSetup initialized with 99 bindings, 0 warnings
+2026-02-02T19:30:22.522Z [DEBUG] [keybindings] Watching for changes to /home/user/.claude/keybindings.json
+2026-02-02T19:30:22.934Z [DEBUG] High write ratio: blit=0, write=1729 (100.0% writes), screen=36x120
+2026-02-02T19:30:23.047Z [DEBUG] High write ratio: blit=0, write=1729 (100.0% writes), screen=36x120
+2026-02-02T19:30:25.805Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060625805
+2026-02-02T19:30:25.805Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:25.814Z [DEBUG] Temp file written successfully, size: 1116 bytes
+2026-02-02T19:30:25.815Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:25.815Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060625805 to /home/user/.claude.json
+2026-02-02T19:30:25.815Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:25.819Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060625819
+2026-02-02T19:30:25.819Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:25.826Z [DEBUG] Temp file written successfully, size: 1116 bytes
+2026-02-02T19:30:25.826Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:25.826Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060625819 to /home/user/.claude.json
+2026-02-02T19:30:25.827Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:25.871Z [DEBUG] High write ratio: blit=0, write=1222 (100.0% writes), screen=28x120
+2026-02-02T19:30:29.297Z [DEBUG] High write ratio: blit=0, write=1418 (100.0% writes), screen=26x120
+2026-02-02T19:30:32.606Z [DEBUG] High write ratio: blit=0, write=1418 (100.0% writes), screen=26x120
+2026-02-02T19:30:40.191Z [DEBUG] High write ratio: blit=0, write=1418 (100.0% writes), screen=26x120
+2026-02-02T19:30:40.730Z [DEBUG] High write ratio: blit=0, write=1418 (100.0% writes), screen=26x120
+2026-02-02T19:30:40.756Z [DEBUG] High write ratio: blit=0, write=1510 (100.0% writes), screen=27x120
+2026-02-02T19:30:42.062Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060642062
+2026-02-02T19:30:42.062Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:42.070Z [DEBUG] Temp file written successfully, size: 1116 bytes
+2026-02-02T19:30:42.070Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:42.070Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060642062 to /home/user/.claude.json
+2026-02-02T19:30:42.070Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:42.076Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060642076
+2026-02-02T19:30:42.076Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:42.083Z [DEBUG] Temp file written successfully, size: 1116 bytes
+2026-02-02T19:30:42.084Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:42.084Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060642076 to /home/user/.claude.json
+2026-02-02T19:30:42.084Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:42.265Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060642265
+2026-02-02T19:30:42.265Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:42.275Z [DEBUG] Temp file written successfully, size: 1367 bytes
+2026-02-02T19:30:42.275Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:42.275Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060642265 to /home/user/.claude.json
+2026-02-02T19:30:42.275Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:42.452Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060642452
+2026-02-02T19:30:42.452Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:42.460Z [DEBUG] Temp file written successfully, size: 1486 bytes
+2026-02-02T19:30:42.460Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:42.460Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060642452 to /home/user/.claude.json
+2026-02-02T19:30:42.460Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:42.686Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060642686
+2026-02-02T19:30:42.686Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:42.695Z [DEBUG] Temp file written successfully, size: 1547 bytes
+2026-02-02T19:30:42.695Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:42.695Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060642686 to /home/user/.claude.json
+2026-02-02T19:30:42.695Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:42.699Z [DEBUG] Skipping Notification:auth_success hook execution - workspace trust not accepted
+2026-02-02T19:30:44.588Z [DEBUG] High write ratio: blit=0, write=1160 (100.0% writes), screen=28x120
+2026-02-02T19:30:45.615Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060645615
+2026-02-02T19:30:45.615Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:45.623Z [DEBUG] Temp file written successfully, size: 1618 bytes
+2026-02-02T19:30:45.623Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:45.623Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060645615 to /home/user/.claude.json
+2026-02-02T19:30:45.623Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:45.654Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-02-02T19:30:45.662Z [DEBUG] Grove: No cache, fetching config in background (dialog skipped this session)
+2026-02-02T19:30:45.668Z [DEBUG] [render] initLayout starting
+2026-02-02T19:30:45.669Z [DEBUG] [render] initLayout complete
+2026-02-02T19:30:45.672Z [DEBUG] [render] first ink render: 25503ms since process start
+2026-02-02T19:30:45.682Z [DEBUG] Git remote URL: null
+2026-02-02T19:30:45.682Z [DEBUG] No git remote URL found
+2026-02-02T19:30:45.682Z [DEBUG] Not in a GitHub repository, skipping path mapping update
+2026-02-02T19:30:45.684Z [DEBUG] [keybindings] KeybindingSetup initialized with 99 bindings, 0 warnings
+2026-02-02T19:30:45.737Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060645736
+2026-02-02T19:30:45.737Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:45.745Z [DEBUG] Temp file written successfully, size: 1617 bytes
+2026-02-02T19:30:45.745Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:45.745Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060645736 to /home/user/.claude.json
+2026-02-02T19:30:45.745Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:45.863Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.76272.1770060645863
+2026-02-02T19:30:45.863Z [DEBUG] Preserving file permissions: 100600
+2026-02-02T19:30:45.870Z [DEBUG] Temp file written successfully, size: 1760 bytes
+2026-02-02T19:30:45.870Z [DEBUG] Applied original permissions to temp file
+2026-02-02T19:30:45.870Z [DEBUG] Renaming /home/user/.claude.json.tmp.76272.1770060645863 to /home/user/.claude.json
+2026-02-02T19:30:45.870Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-02T19:30:46.739Z [DEBUG] Skipping SessionEnd:other hook execution - workspace trust not accepted

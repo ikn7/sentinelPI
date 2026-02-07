@@ -1,0 +1,554 @@
+"""Moteur de règles d'alertes pour StratWatch.
+
+Évalue les conditions et génère des alertes en fonction des données collectées.
+"""
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Any, Optional
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.config import get_settings
+from src.storage.models import (
+    ALERT_TYPES,
+    SEVERITY_ORDER,
+    Alert,
+    BodaccAnnouncement,
+    Competitor,
+    Dirigeant,
+    Financial,
+    FundingRound,
+    JobOffer,
+    NewsMention,
+    Patent,
+    Regulation,
+    RegulationDeadline,
+    Trademark,
+    generate_uuid,
+)
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class AlertRule:
+    """Définition d'une règle d'alerte."""
+
+    alert_type: str
+    condition: str
+    threshold: Optional[int] = None
+    period_days: Optional[int] = None
+    keywords: Optional[list[str]] = None
+
+
+class AlertEngine:
+    """Moteur d'évaluation des règles d'alertes.
+
+    Analyse les données collectées et génère des alertes
+    selon les règles configurées.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialise le moteur d'alertes.
+
+        Args:
+            session: Session SQLAlchemy.
+        """
+        self._session = session
+        self._settings = get_settings()
+        self._logger = get_logger("alerting.engine")
+
+    async def _create_alert(
+        self,
+        alert_type: str,
+        titre: str,
+        message: str,
+        competitor_id: Optional[str] = None,
+        regulation_id: Optional[str] = None,
+        source_url: Optional[str] = None,
+        data: Optional[dict] = None,
+    ) -> Alert:
+        """Crée et sauvegarde une alerte.
+
+        Args:
+            alert_type: Type d'alerte (voir ALERT_TYPES).
+            titre: Titre de l'alerte.
+            message: Message détaillé.
+            competitor_id: ID du concurrent concerné.
+            regulation_id: ID de la réglementation concernée.
+            source_url: URL source.
+            data: Données complémentaires.
+
+        Returns:
+            Alerte créée.
+        """
+        categorie, severite = ALERT_TYPES.get(alert_type, ("autre", "info"))
+
+        alert = Alert(
+            id=generate_uuid(),
+            type=alert_type,
+            categorie=categorie,
+            severite=severite,
+            titre=titre,
+            message=message,
+            competitor_id=competitor_id,
+            regulation_id=regulation_id,
+            source_url=source_url,
+        )
+
+        if data:
+            alert.set_data(data)
+
+        self._session.add(alert)
+        self._logger.info(f"Alerte créée: [{severite}] {titre}")
+
+        return alert
+
+    async def check_recruitment_surge(
+        self,
+        competitor: Competitor,
+    ) -> Optional[Alert]:
+        """Vérifie si un concurrent a une vague de recrutement.
+
+        Args:
+            competitor: Concurrent à analyser.
+
+        Returns:
+            Alerte si seuil dépassé, None sinon.
+        """
+        rules = self._settings.alerting.rules
+        threshold = rules.recrutement_massif.threshold
+        period_days = rules.recrutement_massif.period_days
+
+        since_date = date.today() - timedelta(days=period_days)
+
+        result = await self._session.execute(
+            select(func.count(JobOffer.id)).where(
+                JobOffer.competitor_id == competitor.id,
+                JobOffer.date_detection >= since_date,
+                JobOffer.active == True,
+            )
+        )
+        count = result.scalar() or 0
+
+        if count >= threshold:
+            return await self._create_alert(
+                alert_type="RECRUTEMENT_MASSIF",
+                titre=f"Vague de recrutement chez {competitor.nom}",
+                message=f"{count} offres d'emploi détectées sur les {period_days} derniers jours.",
+                competitor_id=competitor.id,
+                data={"job_count": count, "period_days": period_days},
+            )
+
+        return None
+
+    async def check_strategic_position(
+        self,
+        job_offer: JobOffer,
+    ) -> Optional[Alert]:
+        """Vérifie si une offre d'emploi est pour un poste stratégique.
+
+        Args:
+            job_offer: Offre d'emploi à analyser.
+
+        Returns:
+            Alerte si poste stratégique, None sinon.
+        """
+        strategic_keywords = [
+            "cto", "ceo", "cfo", "coo", "cmo", "cio", "ciso",
+            "directeur", "directrice", "director",
+            "vp", "vice president", "vice-président",
+            "chief", "head of", "responsable",
+            "partner", "associé",
+        ]
+
+        titre_lower = job_offer.titre.lower()
+
+        for keyword in strategic_keywords:
+            if keyword in titre_lower:
+                # Récupérer le concurrent
+                result = await self._session.execute(
+                    select(Competitor).where(Competitor.id == job_offer.competitor_id)
+                )
+                competitor = result.scalar_one_or_none()
+                competitor_name = competitor.nom if competitor else "Inconnu"
+
+                return await self._create_alert(
+                    alert_type="POSTE_STRATEGIQUE",
+                    titre=f"Recrutement stratégique chez {competitor_name}",
+                    message=f"Poste: {job_offer.titre}",
+                    competitor_id=job_offer.competitor_id,
+                    source_url=job_offer.url,
+                    data={"position": job_offer.titre, "keyword": keyword},
+                )
+
+        return None
+
+    async def check_funding_round(
+        self,
+        funding: FundingRound,
+    ) -> Alert:
+        """Génère une alerte pour une levée de fonds.
+
+        Args:
+            funding: Levée de fonds détectée.
+
+        Returns:
+            Alerte créée.
+        """
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.id == funding.competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+        competitor_name = competitor.nom if competitor else "Inconnu"
+
+        montant_str = ""
+        if funding.montant:
+            montant_str = f" de {funding.montant:,} {funding.devise}".replace(",", " ")
+
+        serie_str = f" ({funding.serie})" if funding.serie else ""
+
+        return await self._create_alert(
+            alert_type="LEVEE_FONDS",
+            titre=f"Levée de fonds{serie_str} chez {competitor_name}",
+            message=f"Levée de fonds{montant_str}{serie_str}.",
+            competitor_id=funding.competitor_id,
+            source_url=funding.url,
+            data={
+                "montant": funding.montant,
+                "devise": funding.devise,
+                "serie": funding.serie,
+            },
+        )
+
+    async def check_collective_procedure(
+        self,
+        announcement: BodaccAnnouncement,
+    ) -> Optional[Alert]:
+        """Vérifie si une annonce BODACC est une procédure collective.
+
+        Args:
+            announcement: Annonce BODACC.
+
+        Returns:
+            Alerte si procédure collective, None sinon.
+        """
+        if announcement.categorie != "procedure_collective":
+            return None
+
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.id == announcement.competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+        competitor_name = competitor.nom if competitor else "Inconnu"
+
+        return await self._create_alert(
+            alert_type="PROCEDURE_COLLECTIVE",
+            titre=f"Procédure collective: {competitor_name}",
+            message=f"{announcement.type_annonce}. {announcement.contenu[:200]}...",
+            competitor_id=announcement.competitor_id,
+            source_url=announcement.url,
+            data={
+                "type_annonce": announcement.type_annonce,
+                "tribunal": announcement.tribunal,
+            },
+        )
+
+    async def check_new_executive(
+        self,
+        dirigeant: Dirigeant,
+        is_departure: bool = False,
+    ) -> Alert:
+        """Génère une alerte pour un changement de dirigeant.
+
+        Args:
+            dirigeant: Dirigeant concerné.
+            is_departure: True si départ, False si nomination.
+
+        Returns:
+            Alerte créée.
+        """
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.id == dirigeant.competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+        competitor_name = competitor.nom if competitor else "Inconnu"
+
+        nom_complet = f"{dirigeant.prenom or ''} {dirigeant.nom}".strip()
+
+        if is_departure:
+            alert_type = "DEPART_DIRIGEANT"
+            titre = f"Départ de dirigeant chez {competitor_name}"
+            message = f"{nom_complet} quitte le poste de {dirigeant.fonction}."
+        else:
+            alert_type = "NOUVEAU_DIRIGEANT"
+            titre = f"Nouveau dirigeant chez {competitor_name}"
+            message = f"{nom_complet} nommé(e) {dirigeant.fonction}."
+
+        return await self._create_alert(
+            alert_type=alert_type,
+            titre=titre,
+            message=message,
+            competitor_id=dirigeant.competitor_id,
+            data={
+                "nom": dirigeant.nom,
+                "prenom": dirigeant.prenom,
+                "fonction": dirigeant.fonction,
+            },
+        )
+
+    async def check_patent_filing(
+        self,
+        patent: Patent,
+    ) -> Alert:
+        """Génère une alerte pour un dépôt de brevet.
+
+        Args:
+            patent: Brevet déposé.
+
+        Returns:
+            Alerte créée.
+        """
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.id == patent.competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+        competitor_name = competitor.nom if competitor else "Inconnu"
+
+        return await self._create_alert(
+            alert_type="DEPOT_BREVET",
+            titre=f"Nouveau brevet déposé par {competitor_name}",
+            message=f"{patent.titre}",
+            competitor_id=patent.competitor_id,
+            source_url=patent.url,
+            data={"numero": patent.numero, "titre": patent.titre},
+        )
+
+    async def check_trademark_filing(
+        self,
+        trademark: Trademark,
+    ) -> Alert:
+        """Génère une alerte pour un dépôt de marque.
+
+        Args:
+            trademark: Marque déposée.
+
+        Returns:
+            Alerte créée.
+        """
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.id == trademark.competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+        competitor_name = competitor.nom if competitor else "Inconnu"
+
+        return await self._create_alert(
+            alert_type="DEPOT_MARQUE",
+            titre=f"Nouvelle marque déposée par {competitor_name}",
+            message=f"Marque: {trademark.denomination}",
+            competitor_id=trademark.competitor_id,
+            source_url=trademark.url,
+            data={"numero": trademark.numero, "denomination": trademark.denomination},
+        )
+
+    async def check_negative_press(
+        self,
+        mention: NewsMention,
+    ) -> Optional[Alert]:
+        """Vérifie si une mention presse est négative.
+
+        Args:
+            mention: Mention presse.
+
+        Returns:
+            Alerte si sentiment négatif, None sinon.
+        """
+        threshold = self._settings.processing.sentiment.threshold_negative
+
+        if mention.score_sentiment is None:
+            return None
+
+        if mention.score_sentiment > threshold:
+            return None
+
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.id == mention.competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+        competitor_name = competitor.nom if competitor else "Inconnu"
+
+        return await self._create_alert(
+            alert_type="MENTION_PRESSE_NEGATIVE",
+            titre=f"Couverture presse négative: {competitor_name}",
+            message=f"{mention.titre} ({mention.media})",
+            competitor_id=mention.competitor_id,
+            source_url=mention.url,
+            data={
+                "media": mention.media,
+                "sentiment_score": mention.score_sentiment,
+            },
+        )
+
+    async def check_regulation_deadline(
+        self,
+        deadline: RegulationDeadline,
+    ) -> Optional[Alert]:
+        """Vérifie les échéances réglementaires proches.
+
+        Args:
+            deadline: Échéance à vérifier.
+
+        Returns:
+            Alerte si échéance proche, None sinon.
+        """
+        rules = self._settings.alerting.rules
+        today = date.today()
+        days_until = (deadline.date_echeance - today).days
+
+        if days_until < 0:
+            return None
+
+        # Récupérer la réglementation
+        result = await self._session.execute(
+            select(Regulation).where(Regulation.id == deadline.regulation_id)
+        )
+        regulation = result.scalar_one_or_none()
+        reg_titre = regulation.titre_court or regulation.titre if regulation else "Réglementation"
+
+        if days_until <= rules.echeance_imminente.days_before:
+            alert_type = "ECHEANCE_IMMINENTE"
+            titre = f"Échéance imminente: {days_until} jours"
+        elif days_until <= rules.echeance_proche.days_before:
+            alert_type = "ECHEANCE_PROCHE"
+            titre = f"Échéance dans {days_until} jours"
+        else:
+            return None
+
+        return await self._create_alert(
+            alert_type=alert_type,
+            titre=titre,
+            message=f"{deadline.description}\nTexte: {reg_titre[:100]}",
+            regulation_id=deadline.regulation_id,
+            data={
+                "days_until": days_until,
+                "date_echeance": deadline.date_echeance.isoformat(),
+            },
+        )
+
+    async def check_new_regulation(
+        self,
+        regulation: Regulation,
+    ) -> Alert:
+        """Génère une alerte pour une nouvelle réglementation.
+
+        Args:
+            regulation: Réglementation détectée.
+
+        Returns:
+            Alerte créée.
+        """
+        type_map = {
+            "loi": "NOUVELLE_LOI",
+            "decret": "NOUVEAU_DECRET",
+            "arrete": "NOUVEAU_DECRET",
+            "ordonnance": "NOUVELLE_LOI",
+        }
+
+        alert_type = type_map.get(regulation.type, "NOUVELLE_NORME")
+        titre_court = regulation.titre_court or regulation.titre[:80]
+
+        return await self._create_alert(
+            alert_type=alert_type,
+            titre=f"Nouveau texte: {titre_court}",
+            message=regulation.resume or regulation.titre,
+            regulation_id=regulation.id,
+            source_url=regulation.url,
+            data={
+                "type": regulation.type,
+                "numero": regulation.numero,
+                "secteurs": regulation.get_secteurs(),
+            },
+        )
+
+    async def run_all_checks(self) -> list[Alert]:
+        """Exécute toutes les vérifications d'alertes.
+
+        Returns:
+            Liste des alertes générées.
+        """
+        alerts = []
+
+        # Vérifier les échéances réglementaires
+        self._logger.info("Vérification des échéances réglementaires...")
+        result = await self._session.execute(
+            select(RegulationDeadline).where(
+                RegulationDeadline.statut == "a_venir",
+                RegulationDeadline.rappel_envoye == False,
+            )
+        )
+        for deadline in result.scalars():
+            alert = await self.check_regulation_deadline(deadline)
+            if alert:
+                alerts.append(alert)
+                deadline.rappel_envoye = True
+
+        # Vérifier les vagues de recrutement
+        self._logger.info("Vérification des recrutements...")
+        result = await self._session.execute(
+            select(Competitor).where(Competitor.actif == True)
+        )
+        for competitor in result.scalars():
+            alert = await self.check_recruitment_surge(competitor)
+            if alert:
+                alerts.append(alert)
+
+        await self._session.commit()
+
+        self._logger.info(f"{len(alerts)} alertes générées")
+        return alerts
+
+    async def get_pending_alerts(
+        self,
+        min_severity: str = "info",
+    ) -> list[Alert]:
+        """Récupère les alertes en attente de notification.
+
+        Args:
+            min_severity: Sévérité minimale.
+
+        Returns:
+            Liste des alertes.
+        """
+        min_level = SEVERITY_ORDER.get(min_severity, 0)
+
+        result = await self._session.execute(
+            select(Alert).where(
+                Alert.notified == False,
+            ).order_by(Alert.created_at.desc())
+        )
+
+        alerts = [
+            alert for alert in result.scalars()
+            if SEVERITY_ORDER.get(alert.severite, 0) >= min_level
+        ]
+
+        return alerts
+
+    async def mark_as_notified(self, alert_ids: list[str]) -> None:
+        """Marque des alertes comme notifiées.
+
+        Args:
+            alert_ids: Liste des IDs d'alertes.
+        """
+        result = await self._session.execute(
+            select(Alert).where(Alert.id.in_(alert_ids))
+        )
+
+        for alert in result.scalars():
+            alert.notified = True
+            alert.notified_at = datetime.now()
+
+        await self._session.commit()

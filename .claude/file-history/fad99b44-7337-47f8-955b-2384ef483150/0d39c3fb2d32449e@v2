@@ -1,0 +1,459 @@
+"""
+Sources management component for the SentinelPi dashboard.
+
+Provides UI for viewing and managing data sources.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+from typing import Any, Sequence
+
+import streamlit as st
+
+from src.storage.models import Source, SourceType
+from src.utils.dates import format_relative
+
+
+def _run_async(coro):
+    """Run async coroutine from sync context."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
+async def _toggle_source(source_id: str, current_enabled: bool) -> None:
+    """Toggle source enabled state in the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+
+    async with get_session() as session:
+        await session.execute(
+            update(Source)
+            .where(Source.id == source_id)
+            .values(enabled=not current_enabled)
+        )
+        await session.commit()
+
+
+async def _delete_source(source_id: str) -> bool:
+    """Delete a source and all its items from the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import delete, select
+
+    async with get_session() as session:
+        # Check source exists
+        result = await session.execute(
+            select(Source).where(Source.id == source_id)
+        )
+        source = result.scalar_one_or_none()
+        if not source:
+            return False
+
+        # Delete source (items will cascade due to FK relationship)
+        await session.execute(
+            delete(Source).where(Source.id == source_id)
+        )
+        await session.commit()
+        return True
+
+
+async def _test_source(source_id: str) -> tuple[bool, str]:
+    """Test a source by running a collection job."""
+    from src.storage.database import get_session
+    from src.scheduler.jobs import CollectionJob
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Source).where(Source.id == source_id)
+        )
+        source = result.scalar_one_or_none()
+
+    if not source:
+        return False, "Source introuvable"
+
+    job = CollectionJob(source)
+    result = await job.run()
+
+    if result.success:
+        return True, f"OK - {result.items_collected} items collectés"
+    else:
+        return False, result.error or "Échec de la collecte"
+
+
+def get_source_type_icon(source_type: str | SourceType) -> str:
+    """Get icon for source type."""
+    if isinstance(source_type, SourceType):
+        source_type = source_type.value
+
+    icons = {
+        "rss": "📰",
+        "web": "🌐",
+        "twitter": "🐦",
+        "mastodon": "🐘",
+        "reddit": "🤖",
+        "youtube": "📺",
+        "custom": "🔧",
+    }
+    return icons.get(source_type, "📡")
+
+
+def get_status_badge(source: Source | dict[str, Any]) -> str:
+    """Get status badge for source."""
+    if isinstance(source, dict):
+        enabled = source.get("enabled", True)
+        consecutive_errors = source.get("consecutive_errors", 0)
+        last_success = source.get("last_success")
+    else:
+        enabled = source.enabled
+        consecutive_errors = source.consecutive_errors
+        last_success = source.last_success
+
+    if not enabled:
+        return "⏸️ Désactivé"
+    elif consecutive_errors > 0:
+        return f"⚠️ Erreur ({consecutive_errors})"
+    elif last_success:
+        return "✅ Actif"
+    else:
+        return "⏳ En attente"
+
+
+def render_source_card(
+    source: Source | dict[str, Any],
+    show_actions: bool = True,
+    expanded: bool = False,
+) -> None:
+    """
+    Render a source as a card.
+
+    Args:
+        source: Source object or dictionary.
+        show_actions: Whether to show action buttons.
+        expanded: Whether to show expanded details.
+    """
+    # Handle both Source objects and dicts
+    if isinstance(source, dict):
+        source_id = source.get("id", "")
+        name = source.get("name", "Source sans nom")
+        source_type = source.get("type", "rss")
+        url = source.get("url", "")
+        enabled = source.get("enabled", True)
+        interval = source.get("interval_minutes", 60)
+        category = source.get("category", "")
+        tags = source.get("tags", [])
+        last_check = source.get("last_check")
+        last_success = source.get("last_success")
+        last_error = source.get("last_error")
+        consecutive_errors = source.get("consecutive_errors", 0)
+    else:
+        source_id = source.id
+        name = source.name
+        source_type = source.type.value if isinstance(source.type, SourceType) else source.type
+        url = source.url
+        enabled = source.enabled
+        interval = source.interval_minutes
+        category = source.category or ""
+        tags = source.tags or []
+        last_check = source.last_check
+        last_success = source.last_success
+        last_error = source.last_error
+        consecutive_errors = source.consecutive_errors
+
+    icon = get_source_type_icon(source_type)
+    status = get_status_badge(source)
+
+    with st.container():
+        # Header
+        col1, col2, col3 = st.columns([0.5, 5, 2])
+
+        with col1:
+            st.markdown(f"### {icon}")
+
+        with col2:
+            st.markdown(f"**{name}**")
+            st.caption(url[:60] + "..." if len(url) > 60 else url)
+
+        with col3:
+            st.markdown(status)
+
+        # Details (if expanded)
+        if expanded:
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric("Intervalle", f"{interval} min")
+
+            with col2:
+                st.metric("Catégorie", category or "-")
+
+            with col3:
+                if last_check:
+                    if isinstance(last_check, datetime):
+                        st.metric("Dernier check", format_relative(last_check))
+                    else:
+                        st.metric("Dernier check", last_check)
+                else:
+                    st.metric("Dernier check", "-")
+
+            with col4:
+                st.metric("Erreurs", consecutive_errors)
+
+            # Tags
+            if tags:
+                st.caption(f"🏷️ Tags: {', '.join(tags)}")
+
+            # Error message
+            if last_error:
+                st.error(f"Dernière erreur: {last_error[:200]}")
+
+        # Actions
+        if show_actions:
+            col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
+
+            with col1:
+                toggle_label = "▶️ Activer" if not enabled else "⏸️ Pause"
+                if st.button(toggle_label, key=f"toggle_{source_id}"):
+                    _run_async(_toggle_source(source_id, enabled))
+                    status = "désactivée" if enabled else "activée"
+                    st.toast(f"Source {status}")
+                    st.rerun()
+
+            with col2:
+                if st.button("🔄 Tester", key=f"test_{source_id}"):
+                    with st.spinner("Test en cours..."):
+                        success, message = _run_async(_test_source(source_id))
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
+
+            with col3:
+                if st.button("✏️ Modifier", key=f"edit_{source_id}"):
+                    st.session_state[f"edit_source_{source_id}"] = True
+
+        st.divider()
+
+
+def render_sources_table(
+    sources: Sequence[Source | dict[str, Any]],
+) -> None:
+    """
+    Render sources as a table.
+
+    Args:
+        sources: List of sources to display.
+    """
+    if not sources:
+        st.info("📭 Aucune source configurée.", icon="ℹ️")
+        return
+
+    # Prepare data
+    data = []
+    for source in sources:
+        if isinstance(source, dict):
+            row = {
+                "": get_source_type_icon(source.get("type", "rss")),
+                "Nom": source.get("name", ""),
+                "URL": source.get("url", "")[:50] + "...",
+                "Intervalle": f"{source.get('interval_minutes', 60)} min",
+                "Catégorie": source.get("category", "-"),
+                "Statut": get_status_badge(source),
+            }
+        else:
+            row = {
+                "": get_source_type_icon(source.type),
+                "Nom": source.name,
+                "URL": source.url[:50] + "..." if len(source.url) > 50 else source.url,
+                "Intervalle": f"{source.interval_minutes} min",
+                "Catégorie": source.category or "-",
+                "Statut": get_status_badge(source),
+            }
+        data.append(row)
+
+    st.dataframe(data, use_container_width=True, hide_index=True)
+
+
+def render_add_source_form() -> dict[str, Any] | None:
+    """
+    Render the add source form.
+
+    Returns:
+        Source data dict if submitted, None otherwise.
+    """
+    with st.form("add_source"):
+        st.subheader("➕ Ajouter une source")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            source_type = st.selectbox(
+                "Type de source",
+                options=["rss", "web", "reddit", "youtube", "mastodon"],
+                format_func=lambda x: f"{get_source_type_icon(x)} {x.upper()}",
+            )
+
+            name = st.text_input(
+                "Nom",
+                placeholder="Ma source",
+                help="Nom d'affichage de la source",
+            )
+
+            url = st.text_input(
+                "URL",
+                placeholder="https://...",
+                help="URL du flux RSS ou de la page",
+            )
+
+        with col2:
+            category = st.text_input(
+                "Catégorie",
+                placeholder="tech, presse, etc.",
+                help="Catégorie pour le tri",
+            )
+
+            tags_input = st.text_input(
+                "Tags",
+                placeholder="tag1, tag2, tag3",
+                help="Tags séparés par des virgules",
+            )
+
+            interval = st.number_input(
+                "Intervalle (minutes)",
+                min_value=5,
+                max_value=1440,
+                value=60,
+                help="Fréquence de collecte",
+            )
+
+            priority = st.selectbox(
+                "Priorité",
+                options=[1, 2, 3],
+                index=1,
+                format_func=lambda x: {1: "🔴 Haute", 2: "🟡 Normale", 3: "🟢 Basse"}.get(x),
+            )
+
+        # Web scraping config
+        if source_type == "web":
+            st.divider()
+            st.caption("⚙️ Configuration du scraping")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                selector = st.text_input(
+                    "Sélecteur CSS (items)",
+                    placeholder="article.news-item",
+                    help="Sélecteur pour les conteneurs d'items",
+                )
+                title_selector = st.text_input(
+                    "Sélecteur titre",
+                    placeholder="h2, .title",
+                )
+
+            with col2:
+                link_selector = st.text_input(
+                    "Sélecteur lien",
+                    placeholder="a",
+                )
+                content_selector = st.text_input(
+                    "Sélecteur contenu",
+                    placeholder=".excerpt, .content",
+                )
+
+        # Submit buttons
+        col1, col2 = st.columns(2)
+
+        with col1:
+            submitted = st.form_submit_button("💾 Enregistrer", use_container_width=True)
+
+        with col2:
+            cancelled = st.form_submit_button("❌ Annuler", use_container_width=True)
+
+        if cancelled:
+            return None
+
+        if submitted:
+            if not name or not url:
+                st.error("Le nom et l'URL sont requis.")
+                return None
+
+            # Build source data
+            source_data = {
+                "name": name,
+                "type": source_type,
+                "url": url,
+                "category": category or None,
+                "tags": [t.strip() for t in tags_input.split(",") if t.strip()] if tags_input else [],
+                "interval_minutes": interval,
+                "priority": priority,
+                "enabled": True,
+            }
+
+            # Add web config if applicable
+            if source_type == "web":
+                source_data["config"] = {
+                    "selector": selector,
+                    "title_selector": title_selector,
+                    "link_selector": link_selector,
+                    "content_selector": content_selector,
+                }
+
+            return source_data
+
+    return None
+
+
+def render_source_stats(sources: Sequence[Source | dict[str, Any]]) -> None:
+    """
+    Render source statistics.
+
+    Args:
+        sources: List of sources.
+    """
+    if not sources:
+        return
+
+    # Count by type
+    type_counts: dict[str, int] = {}
+    active_count = 0
+    error_count = 0
+
+    for source in sources:
+        if isinstance(source, dict):
+            stype = source.get("type", "rss")
+            enabled = source.get("enabled", True)
+            errors = source.get("consecutive_errors", 0)
+        else:
+            stype = source.type.value if isinstance(source.type, SourceType) else source.type
+            enabled = source.enabled
+            errors = source.consecutive_errors
+
+        type_counts[stype] = type_counts.get(stype, 0) + 1
+
+        if enabled:
+            active_count += 1
+        if errors > 0:
+            error_count += 1
+
+    # Display stats
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Total", len(sources))
+
+    with col2:
+        st.metric("Actives", active_count)
+
+    with col3:
+        st.metric("En erreur", error_count)
+
+    with col4:
+        # Most common type
+        if type_counts:
+            most_common = max(type_counts, key=type_counts.get)
+            st.metric("Type principal", f"{get_source_type_icon(most_common)} {most_common}")

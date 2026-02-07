@@ -1,0 +1,100 @@
+"""
+SentinelPi - Main entry point.
+
+Multi-source monitoring station for Raspberry Pi.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import signal
+import sys
+from typing import NoReturn
+
+from src.storage.database import close_database, init_database
+from src.utils.config import get_settings
+from src.utils.logging import create_logger, setup_logging
+
+log = create_logger("main")
+
+# Shutdown flag
+_shutdown_event: asyncio.Event | None = None
+
+
+def handle_shutdown(signum: int, frame) -> None:
+    """Handle shutdown signals gracefully."""
+    signal_name = signal.Signals(signum).name
+    log.info(f"Received {signal_name}, initiating shutdown...")
+    if _shutdown_event:
+        _shutdown_event.set()
+
+
+async def startup() -> None:
+    """Initialize all components."""
+    log.info("Starting SentinelPi...")
+
+    # Initialize database
+    await init_database()
+
+    log.info("SentinelPi started successfully")
+
+
+async def shutdown() -> None:
+    """Cleanup and shutdown all components."""
+    log.info("Shutting down SentinelPi...")
+
+    # Close database
+    await close_database()
+
+    log.info("SentinelPi shutdown complete")
+
+
+async def run() -> None:
+    """Main run loop."""
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+
+    # Register signal handlers
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, handle_shutdown)
+
+    try:
+        await startup()
+
+        settings = get_settings()
+        log.info(f"SentinelPi v{settings.app.version} is running")
+        log.info(f"Timezone: {settings.app.timezone}")
+        log.info("Press Ctrl+C to stop")
+
+        # Wait for shutdown signal
+        # TODO: Start scheduler and collectors here
+        await _shutdown_event.wait()
+
+    except Exception as e:
+        log.exception(f"Fatal error: {e}")
+        raise
+    finally:
+        await shutdown()
+
+
+def main() -> NoReturn:
+    """Entry point for the application."""
+    # Setup logging first
+    setup_logging()
+
+    settings = get_settings()
+    log.info(f"Starting {settings.app.name} v{settings.app.version}")
+
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        log.info("Interrupted by user")
+    except Exception as e:
+        log.exception(f"Application error: {e}")
+        sys.exit(1)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

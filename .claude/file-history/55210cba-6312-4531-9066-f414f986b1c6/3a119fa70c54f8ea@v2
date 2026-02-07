@@ -1,0 +1,439 @@
+"""Scheduler pour l'exécution automatique des tâches StratWatch.
+
+Utilise APScheduler pour planifier :
+- Collecte des données (Pappers, BODACC, Légifrance)
+- Vérification des alertes
+- Envoi des notifications
+- Génération des rapports
+"""
+
+import asyncio
+from datetime import datetime
+from typing import Optional
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
+from src.config import get_settings, load_competitors, load_sectors
+from src.utils.logging import get_logger, setup_logging
+
+logger = get_logger(__name__)
+
+
+class StratWatchScheduler:
+    """Gestionnaire de tâches planifiées.
+
+    Orchestre l'exécution automatique de toutes les tâches
+    de collecte, analyse et notification.
+
+    Example:
+        scheduler = StratWatchScheduler()
+        await scheduler.start()
+    """
+
+    def __init__(self) -> None:
+        """Initialise le scheduler."""
+        self._settings = get_settings()
+        self._scheduler = AsyncIOScheduler()
+        self._logger = get_logger("scheduler")
+        self._running = False
+
+    def _get_interval_minutes(self, task_name: str) -> int:
+        """Récupère l'intervalle configuré pour une tâche.
+
+        Args:
+            task_name: Nom de la tâche.
+
+        Returns:
+            Intervalle en minutes.
+        """
+        intervals = self._settings.collection.intervals
+        return getattr(intervals, task_name, 60)
+
+    async def _run_with_session(self, coro_func):
+        """Exécute une coroutine avec une session de base de données.
+
+        Args:
+            coro_func: Fonction coroutine prenant une session.
+        """
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        async with db.session() as session:
+            try:
+                await coro_func(session)
+            except Exception as e:
+                self._logger.error(f"Erreur lors de l'exécution: {e}")
+
+    # =========================================================================
+    # Tâches de collecte
+    # =========================================================================
+
+    async def task_collect_legal(self) -> None:
+        """Tâche: Collecte des données légales via Pappers."""
+        self._logger.info("Début de la collecte des données légales")
+
+        from src.collectors import PappersCollector
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        competitors_config = load_competitors()
+        if not competitors_config.competitors:
+            self._logger.warning("Aucun concurrent configuré")
+            return
+
+        async with PappersCollector() as collector:
+            for comp in competitors_config.competitors:
+                try:
+                    async with db.session() as session:
+                        result = await collector.collect_with_details(comp.siren, session)
+                        self._logger.info(
+                            f"[{comp.siren}] {comp.nom}: {result.items_saved} éléments"
+                        )
+                except Exception as e:
+                    self._logger.error(f"Erreur collecte {comp.siren}: {e}")
+
+        self._logger.info("Collecte des données légales terminée")
+
+    async def task_collect_bodacc(self) -> None:
+        """Tâche: Collecte des annonces BODACC."""
+        self._logger.info("Début de la collecte BODACC")
+
+        from src.collectors import BodaccCollector
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        try:
+            async with BodaccCollector() as collector:
+                async with db.session() as session:
+                    result = await collector.collect_and_save(session)
+                    self._logger.info(
+                        f"BODACC: {result.items_collected} analysées, "
+                        f"{result.items_saved} nouvelles"
+                    )
+        except Exception as e:
+            self._logger.error(f"Erreur collecte BODACC: {e}")
+
+        self._logger.info("Collecte BODACC terminée")
+
+    async def task_collect_regulations(self) -> None:
+        """Tâche: Collecte des textes réglementaires."""
+        self._logger.info("Début de la collecte réglementaire")
+
+        from src.collectors import LegifranceCollector
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        try:
+            async with LegifranceCollector() as collector:
+                async with db.session() as session:
+                    result = await collector.collect_and_save(session)
+                    self._logger.info(
+                        f"Légifrance: {result.items_collected} textes, "
+                        f"{result.items_saved} nouveaux"
+                    )
+        except Exception as e:
+            self._logger.error(f"Erreur collecte Légifrance: {e}")
+
+        self._logger.info("Collecte réglementaire terminée")
+
+    # =========================================================================
+    # Tâches d'alertes
+    # =========================================================================
+
+    async def task_check_alerts(self) -> None:
+        """Tâche: Vérifie et génère les alertes."""
+        self._logger.info("Vérification des alertes")
+
+        from src.alerting import AlertEngine
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        try:
+            async with db.session() as session:
+                engine = AlertEngine(session)
+                alerts = await engine.run_all_checks()
+                self._logger.info(f"{len(alerts)} nouvelles alertes générées")
+        except Exception as e:
+            self._logger.error(f"Erreur vérification alertes: {e}")
+
+    async def task_send_notifications(self) -> None:
+        """Tâche: Envoie les notifications en attente."""
+        self._logger.info("Envoi des notifications")
+
+        from src.alerting import NotificationDispatcher
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        try:
+            async with db.session() as session:
+                dispatcher = NotificationDispatcher(session)
+                stats = await dispatcher.process_pending_alerts()
+                self._logger.info(
+                    f"Notifications: {stats['sent']} envoyées, {stats['failed']} échouées"
+                )
+        except Exception as e:
+            self._logger.error(f"Erreur envoi notifications: {e}")
+
+    async def task_send_daily_digest(self) -> None:
+        """Tâche: Envoie le digest quotidien."""
+        self._logger.info("Envoi du digest quotidien")
+
+        from src.alerting import NotificationDispatcher
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        try:
+            async with db.session() as session:
+                dispatcher = NotificationDispatcher(session)
+                success = await dispatcher.send_digest("daily")
+                if success:
+                    self._logger.info("Digest quotidien envoyé")
+                else:
+                    self._logger.warning("Échec envoi digest quotidien")
+        except Exception as e:
+            self._logger.error(f"Erreur envoi digest: {e}")
+
+    async def task_send_weekly_digest(self) -> None:
+        """Tâche: Envoie le digest hebdomadaire."""
+        self._logger.info("Envoi du digest hebdomadaire")
+
+        from src.alerting import NotificationDispatcher
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        try:
+            async with db.session() as session:
+                dispatcher = NotificationDispatcher(session)
+                success = await dispatcher.send_digest("weekly")
+                if success:
+                    self._logger.info("Digest hebdomadaire envoyé")
+                else:
+                    self._logger.warning("Échec envoi digest hebdomadaire")
+        except Exception as e:
+            self._logger.error(f"Erreur envoi digest: {e}")
+
+    # =========================================================================
+    # Tâches de rapport
+    # =========================================================================
+
+    async def task_generate_weekly_report(self) -> None:
+        """Tâche: Génère le rapport hebdomadaire."""
+        self._logger.info("Génération du rapport hebdomadaire")
+
+        from src.reporting import ReportGenerator
+        from src.storage import db
+
+        if not db.is_initialized:
+            await db.init()
+
+        try:
+            async with db.session() as session:
+                generator = ReportGenerator(session)
+                report_path = await generator.generate_weekly_report()
+                self._logger.info(f"Rapport généré: {report_path}")
+        except Exception as e:
+            self._logger.error(f"Erreur génération rapport: {e}")
+
+    # =========================================================================
+    # Configuration et démarrage
+    # =========================================================================
+
+    def configure_jobs(self) -> None:
+        """Configure toutes les tâches planifiées."""
+        intervals = self._settings.collection.intervals
+        reporting = self._settings.reporting
+
+        # Collecte des données légales (1x/jour à 6h)
+        self._scheduler.add_job(
+            self.task_collect_legal,
+            CronTrigger(hour=6, minute=0),
+            id="collect_legal",
+            name="Collecte données légales",
+            replace_existing=True,
+        )
+
+        # Collecte BODACC (2x/jour à 7h et 19h)
+        self._scheduler.add_job(
+            self.task_collect_bodacc,
+            CronTrigger(hour="7,19", minute=0),
+            id="collect_bodacc",
+            name="Collecte BODACC",
+            replace_existing=True,
+        )
+
+        # Collecte réglementaire (2x/jour à 8h et 20h)
+        self._scheduler.add_job(
+            self.task_collect_regulations,
+            CronTrigger(hour="8,20", minute=0),
+            id="collect_regulations",
+            name="Collecte réglementaire",
+            replace_existing=True,
+        )
+
+        # Vérification des alertes (toutes les 30 minutes)
+        self._scheduler.add_job(
+            self.task_check_alerts,
+            IntervalTrigger(minutes=30),
+            id="check_alerts",
+            name="Vérification alertes",
+            replace_existing=True,
+        )
+
+        # Envoi des notifications (toutes les 15 minutes)
+        self._scheduler.add_job(
+            self.task_send_notifications,
+            IntervalTrigger(minutes=15),
+            id="send_notifications",
+            name="Envoi notifications",
+            replace_existing=True,
+        )
+
+        # Digest quotidien (tous les jours à 8h)
+        self._scheduler.add_job(
+            self.task_send_daily_digest,
+            CronTrigger(hour=8, minute=30),
+            id="daily_digest",
+            name="Digest quotidien",
+            replace_existing=True,
+        )
+
+        # Digest hebdomadaire (lundi à 8h)
+        if reporting.schedule == "weekly":
+            self._scheduler.add_job(
+                self.task_send_weekly_digest,
+                CronTrigger(
+                    day_of_week=reporting.day_of_week,
+                    hour=reporting.hour,
+                    minute=0
+                ),
+                id="weekly_digest",
+                name="Digest hebdomadaire",
+                replace_existing=True,
+            )
+
+        # Rapport hebdomadaire (lundi à 9h)
+        if reporting.auto_generate:
+            self._scheduler.add_job(
+                self.task_generate_weekly_report,
+                CronTrigger(
+                    day_of_week=reporting.day_of_week,
+                    hour=reporting.hour + 1,
+                    minute=0
+                ),
+                id="weekly_report",
+                name="Rapport hebdomadaire",
+                replace_existing=True,
+            )
+
+        self._logger.info(f"{len(self._scheduler.get_jobs())} tâches configurées")
+
+    async def start(self) -> None:
+        """Démarre le scheduler."""
+        if self._running:
+            self._logger.warning("Scheduler déjà en cours d'exécution")
+            return
+
+        self._logger.info("Démarrage du scheduler StratWatch")
+
+        # Initialiser la base de données
+        from src.storage import db
+        await db.init()
+        await db.create_tables()
+
+        # Configurer les tâches
+        self.configure_jobs()
+
+        # Démarrer
+        self._scheduler.start()
+        self._running = True
+
+        self._logger.info("Scheduler démarré")
+
+    async def stop(self) -> None:
+        """Arrête le scheduler."""
+        if not self._running:
+            return
+
+        self._logger.info("Arrêt du scheduler")
+        self._scheduler.shutdown(wait=True)
+        self._running = False
+
+        # Fermer la base de données
+        from src.storage import db
+        await db.close()
+
+    def get_jobs(self) -> list[dict]:
+        """Retourne la liste des tâches planifiées.
+
+        Returns:
+            Liste des tâches avec leurs détails.
+        """
+        jobs = []
+        for job in self._scheduler.get_jobs():
+            next_run = getattr(job, "next_run_time", None)
+            jobs.append({
+                "id": job.id,
+                "name": job.name,
+                "next_run": next_run.isoformat() if next_run else None,
+                "trigger": str(job.trigger),
+            })
+        return jobs
+
+    async def run_job_now(self, job_id: str) -> bool:
+        """Exécute une tâche immédiatement.
+
+        Args:
+            job_id: Identifiant de la tâche.
+
+        Returns:
+            True si la tâche a été lancée.
+        """
+        job = self._scheduler.get_job(job_id)
+        if not job:
+            self._logger.error(f"Tâche non trouvée: {job_id}")
+            return False
+
+        self._logger.info(f"Exécution manuelle: {job.name}")
+        job.modify(next_run_time=datetime.now())
+        return True
+
+
+async def run_scheduler():
+    """Fonction principale pour exécuter le scheduler."""
+    settings = get_settings()
+    setup_logging(
+        level=settings.logging.level,
+        log_dir=settings.get_log_dir(),
+    )
+
+    scheduler = StratWatchScheduler()
+    await scheduler.start()
+
+    try:
+        # Garder le scheduler en vie
+        while True:
+            await asyncio.sleep(60)
+    except (KeyboardInterrupt, SystemExit):
+        await scheduler.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(run_scheduler())

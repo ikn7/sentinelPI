@@ -1,0 +1,16 @@
+# Configuration des concurrents à surveiller
+# Ajoutez vos concurrents ici avec leur SIREN et informations complémentaires
+
+competitors:
+  # Exemple de configuration - à personnaliser
+  # - siren: "123456789"
+  #   nom: "Concurrent A"
+  #   priorite: 1  # 1=haute, 2=moyenne, 3=basse
+  #   site_web: "https://concurrent-a.com"
+  #   mots_cles_presse:
+  #     - "Concurrent A"
+  #     - "ConcurrentA"
+  #   linkedin_company_id: "concurrent-a"
+  #   notes: "Concurrent principal sur le segment X"
+
+  []  # Liste vide par défaut - à remplir

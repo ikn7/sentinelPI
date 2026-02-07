@@ -1,0 +1,189 @@
+"""Classe de base abstraite pour tous les collecteurs."""
+
+from abc import ABC, abstractmethod
+from datetime import datetime
+from typing import Any, Generic, Optional, TypeVar
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.config import get_settings
+from src.utils.http import HTTPClient
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+T = TypeVar("T")
+
+
+class BaseCollector(ABC, Generic[T]):
+    """Classe de base pour tous les collecteurs de données.
+
+    Fournit une structure commune pour :
+    - Initialisation du client HTTP
+    - Logging
+    - Gestion des erreurs
+    - Interface de collecte standardisée
+    """
+
+    # Nom du collecteur (à surcharger)
+    name: str = "base"
+
+    # Source pour le rate limiting
+    source_name: str = "default"
+
+    def __init__(self, session: Optional[AsyncSession] = None) -> None:
+        """Initialise le collecteur.
+
+        Args:
+            session: Session SQLAlchemy optionnelle.
+        """
+        self._session = session
+        self._client: Optional[HTTPClient] = None
+        self._settings = get_settings()
+        self._logger = get_logger(f"collector.{self.name}")
+
+    @property
+    def client(self) -> HTTPClient:
+        """Retourne le client HTTP, le crée si nécessaire."""
+        if self._client is None:
+            self._client = HTTPClient(source_name=self.source_name)
+        return self._client
+
+    async def __aenter__(self) -> "BaseCollector":
+        """Entre dans le contexte async."""
+        await self.client.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Sort du contexte async."""
+        if self._client is not None:
+            await self._client.__aexit__(exc_type, exc_val, exc_tb)
+
+    @abstractmethod
+    async def collect(self, **kwargs: Any) -> list[T]:
+        """Collecte les données.
+
+        Args:
+            **kwargs: Arguments spécifiques au collecteur.
+
+        Returns:
+            Liste des éléments collectés.
+        """
+        pass
+
+    @abstractmethod
+    async def collect_for_competitor(
+        self,
+        siren: str,
+        **kwargs: Any,
+    ) -> list[T]:
+        """Collecte les données pour un concurrent spécifique.
+
+        Args:
+            siren: Numéro SIREN du concurrent.
+            **kwargs: Arguments supplémentaires.
+
+        Returns:
+            Liste des éléments collectés.
+        """
+        pass
+
+    async def save(self, items: list[T], session: AsyncSession) -> int:
+        """Sauvegarde les éléments collectés en base.
+
+        Args:
+            items: Liste des éléments à sauvegarder.
+            session: Session SQLAlchemy.
+
+        Returns:
+            Nombre d'éléments sauvegardés.
+        """
+        if not items:
+            return 0
+
+        saved = 0
+        for item in items:
+            try:
+                session.add(item)
+                saved += 1
+            except Exception as e:
+                self._logger.error(f"Erreur lors de la sauvegarde: {e}")
+
+        await session.flush()
+        return saved
+
+    def log_collection_start(self, target: str) -> None:
+        """Log le début d'une collecte."""
+        self._logger.info(f"Début de collecte pour {target}")
+
+    def log_collection_end(self, target: str, count: int) -> None:
+        """Log la fin d'une collecte."""
+        self._logger.info(f"Collecte terminée pour {target}: {count} éléments")
+
+    def log_error(self, message: str, exc: Optional[Exception] = None) -> None:
+        """Log une erreur."""
+        if exc:
+            self._logger.error(f"{message}: {exc}")
+        else:
+            self._logger.error(message)
+
+
+class CollectionResult:
+    """Résultat d'une opération de collecte."""
+
+    def __init__(
+        self,
+        collector_name: str,
+        target: str,
+        success: bool,
+        items_collected: int = 0,
+        items_saved: int = 0,
+        errors: Optional[list[str]] = None,
+        started_at: Optional[datetime] = None,
+        finished_at: Optional[datetime] = None,
+    ) -> None:
+        """Initialise le résultat.
+
+        Args:
+            collector_name: Nom du collecteur.
+            target: Cible de la collecte (SIREN, mot-clé, etc.).
+            success: Si la collecte a réussi.
+            items_collected: Nombre d'éléments collectés.
+            items_saved: Nombre d'éléments sauvegardés.
+            errors: Liste des erreurs rencontrées.
+            started_at: Heure de début.
+            finished_at: Heure de fin.
+        """
+        self.collector_name = collector_name
+        self.target = target
+        self.success = success
+        self.items_collected = items_collected
+        self.items_saved = items_saved
+        self.errors = errors or []
+        self.started_at = started_at or datetime.now()
+        self.finished_at = finished_at
+
+    @property
+    def duration_seconds(self) -> Optional[float]:
+        """Retourne la durée en secondes."""
+        if self.finished_at and self.started_at:
+            return (self.finished_at - self.started_at).total_seconds()
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convertit en dictionnaire."""
+        return {
+            "collector": self.collector_name,
+            "target": self.target,
+            "success": self.success,
+            "items_collected": self.items_collected,
+            "items_saved": self.items_saved,
+            "errors": self.errors,
+            "duration_seconds": self.duration_seconds,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<CollectionResult(collector={self.collector_name}, "
+            f"success={self.success}, collected={self.items_collected})>"
+        )

@@ -1,0 +1,337 @@
+"""
+Relevance scoring processor for SentinelPi.
+
+Calculates relevance scores for items based on various factors.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Sequence
+
+from src.collectors.base import CollectedItem
+from src.processors.filter import FilterResult
+from src.utils.dates import now
+from src.utils.logging import create_logger
+
+log = create_logger("processors.scorer")
+
+
+@dataclass
+class ScoringWeights:
+    """Weights for different scoring factors."""
+
+    # Filter-based scoring
+    filter_modifier_weight: float = 1.0
+
+    # Recency scoring (newer = higher)
+    recency_weight: float = 20.0
+    recency_decay_hours: float = 48.0  # Half-life in hours
+
+    # Source priority (1=high, 2=normal, 3=low)
+    priority_weight: float = 15.0
+
+    # Content quality indicators
+    has_content_bonus: float = 5.0
+    has_image_bonus: float = 3.0
+    has_author_bonus: float = 2.0
+
+    # Length scoring (moderate length is best)
+    optimal_content_length: int = 1000
+    content_length_weight: float = 5.0
+
+    # Highlighted items
+    highlight_bonus: float = 30.0
+
+
+@dataclass
+class ScoreBreakdown:
+    """Breakdown of how a score was calculated."""
+
+    base_score: float = 0.0
+    filter_score: float = 0.0
+    recency_score: float = 0.0
+    priority_score: float = 0.0
+    quality_score: float = 0.0
+    highlight_score: float = 0.0
+    custom_score: float = 0.0
+    preference_score: float = 0.0  # Learned user preferences
+
+    @property
+    def total(self) -> float:
+        """Calculate total score."""
+        return (
+            self.base_score
+            + self.filter_score
+            + self.recency_score
+            + self.priority_score
+            + self.quality_score
+            + self.highlight_score
+            + self.custom_score
+            + self.preference_score
+        )
+
+    def to_dict(self) -> dict[str, float]:
+        """Convert to dictionary."""
+        return {
+            "base": self.base_score,
+            "filter": self.filter_score,
+            "recency": self.recency_score,
+            "priority": self.priority_score,
+            "quality": self.quality_score,
+            "highlight": self.highlight_score,
+            "custom": self.custom_score,
+            "preference": self.preference_score,
+            "total": self.total,
+        }
+
+
+@dataclass
+class ScoredItem:
+    """An item with its calculated score."""
+
+    item: CollectedItem
+    score: float
+    breakdown: ScoreBreakdown
+    filter_result: FilterResult | None = None
+
+    def __lt__(self, other: "ScoredItem") -> bool:
+        """Compare by score (for sorting)."""
+        return self.score < other.score
+
+
+class Scorer:
+    """
+    Relevance scorer for collected items.
+
+    Calculates a relevance score based on:
+    - Filter match score modifiers
+    - Recency (newer items score higher)
+    - Source priority
+    - Content quality indicators
+    - Custom scoring functions
+    """
+
+    def __init__(
+        self,
+        weights: ScoringWeights | None = None,
+    ) -> None:
+        """
+        Initialize the scorer.
+
+        Args:
+            weights: Scoring weights configuration.
+        """
+        self.weights = weights or ScoringWeights()
+        self._custom_scorers: list[Callable[[CollectedItem, dict], float]] = []
+
+    def register_custom_scorer(
+        self,
+        func: Callable[[CollectedItem, dict], float],
+    ) -> None:
+        """
+        Register a custom scoring function.
+
+        Args:
+            func: Function taking (item, context) and returning a score delta.
+        """
+        self._custom_scorers.append(func)
+
+    def score_item(
+        self,
+        item: CollectedItem,
+        filter_result: FilterResult | None = None,
+        source_priority: int = 2,
+        context: dict[str, Any] | None = None,
+    ) -> ScoredItem:
+        """
+        Calculate the relevance score for an item.
+
+        Args:
+            item: The item to score.
+            filter_result: Result from filter processing (if available).
+            source_priority: Source priority (1=high, 2=normal, 3=low).
+            context: Additional context for custom scorers.
+
+        Returns:
+            ScoredItem with score and breakdown.
+        """
+        breakdown = ScoreBreakdown()
+        context = context or {}
+
+        # Base score (starting point)
+        breakdown.base_score = 50.0
+
+        # Filter-based score
+        if filter_result:
+            breakdown.filter_score = (
+                filter_result.total_score_modifier * self.weights.filter_modifier_weight
+            )
+
+            # Highlight bonus
+            if filter_result.highlighted:
+                breakdown.highlight_score = self.weights.highlight_bonus
+
+        # Recency score
+        breakdown.recency_score = self._calculate_recency_score(item)
+
+        # Priority score
+        breakdown.priority_score = self._calculate_priority_score(source_priority)
+
+        # Quality score
+        breakdown.quality_score = self._calculate_quality_score(item)
+
+        # Custom scorers
+        for scorer_func in self._custom_scorers:
+            try:
+                breakdown.custom_score += scorer_func(item, context)
+            except Exception as e:
+                log.warning(f"Custom scorer failed: {e}")
+
+        return ScoredItem(
+            item=item,
+            score=breakdown.total,
+            breakdown=breakdown,
+            filter_result=filter_result,
+        )
+
+    def _calculate_recency_score(self, item: CollectedItem) -> float:
+        """Calculate score based on item age."""
+        published_at = item.published_at or item.collected_at
+        current = now()
+
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+
+        age_hours = (current - published_at).total_seconds() / 3600
+
+        # Exponential decay
+        decay_rate = 0.693 / self.weights.recency_decay_hours  # ln(2) / half_life
+        recency_factor = 2 ** (-age_hours * decay_rate / 0.693)
+
+        return self.weights.recency_weight * recency_factor
+
+    def _calculate_priority_score(self, priority: int) -> float:
+        """Calculate score based on source priority."""
+        # Priority 1 = high (full weight), 2 = normal (half), 3 = low (quarter)
+        if priority == 1:
+            return self.weights.priority_weight
+        elif priority == 2:
+            return self.weights.priority_weight * 0.5
+        else:
+            return self.weights.priority_weight * 0.25
+
+    def _calculate_quality_score(self, item: CollectedItem) -> float:
+        """Calculate score based on content quality indicators."""
+        score = 0.0
+
+        # Has content
+        if item.content and len(item.content) > 100:
+            score += self.weights.has_content_bonus
+
+            # Content length scoring (bell curve around optimal)
+            content_len = len(item.content)
+            optimal = self.weights.optimal_content_length
+
+            if content_len < optimal:
+                length_factor = content_len / optimal
+            else:
+                # Diminishing returns for very long content
+                length_factor = 1.0 - min(0.5, (content_len - optimal) / (optimal * 5))
+
+            score += self.weights.content_length_weight * length_factor
+
+        # Has image
+        if item.image_url:
+            score += self.weights.has_image_bonus
+
+        # Has author
+        if item.author:
+            score += self.weights.has_author_bonus
+
+        return score
+
+    def score_items(
+        self,
+        items: Sequence[CollectedItem],
+        filter_results: dict[str, FilterResult] | None = None,
+        source_priorities: dict[str, int] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> list[ScoredItem]:
+        """
+        Score multiple items.
+
+        Args:
+            items: Items to score.
+            filter_results: Dictionary mapping item GUID to FilterResult.
+            source_priorities: Dictionary mapping source_id to priority.
+            context: Additional context for custom scorers.
+
+        Returns:
+            List of ScoredItems (not sorted).
+        """
+        filter_results = filter_results or {}
+        source_priorities = source_priorities or {}
+
+        scored_items = []
+
+        for item in items:
+            filter_result = filter_results.get(item.guid)
+            source_id = item.extra.get("source_id", "")
+            priority = source_priorities.get(source_id, 2)
+
+            scored = self.score_item(
+                item,
+                filter_result=filter_result,
+                source_priority=priority,
+                context=context,
+            )
+            scored_items.append(scored)
+
+        return scored_items
+
+    def rank_items(
+        self,
+        scored_items: Sequence[ScoredItem],
+        descending: bool = True,
+    ) -> list[ScoredItem]:
+        """
+        Rank scored items by score.
+
+        Args:
+            scored_items: Items with scores.
+            descending: Whether to sort descending (highest first).
+
+        Returns:
+            Sorted list of ScoredItems.
+        """
+        return sorted(scored_items, key=lambda x: x.score, reverse=descending)
+
+
+def score_and_rank(
+    items: Sequence[CollectedItem],
+    filter_results: Sequence[FilterResult] | None = None,
+    weights: ScoringWeights | None = None,
+) -> list[ScoredItem]:
+    """
+    Convenience function to score and rank items.
+
+    Args:
+        items: Items to score.
+        filter_results: Filter results (matched by index).
+        weights: Scoring weights.
+
+    Returns:
+        List of ScoredItems, sorted by score descending.
+    """
+    scorer = Scorer(weights)
+
+    # Build filter results dict
+    filter_dict: dict[str, FilterResult] = {}
+    if filter_results:
+        for result in filter_results:
+            filter_dict[result.item.guid] = result
+
+    scored = scorer.score_items(items, filter_results=filter_dict)
+    return scorer.rank_items(scored)

@@ -1,0 +1,59 @@
+# SentinelPi - Configuration des variables d'environnement
+# Copier ce fichier vers .env et renseigner les valeurs
+
+# ============================================
+# TELEGRAM
+# ============================================
+# Créer un bot via @BotFather sur Telegram
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+# ID du chat où envoyer les alertes (utiliser @userinfobot pour obtenir votre ID)
+TELEGRAM_CHAT_ID=your_chat_id_here
+
+# ============================================
+# EMAIL (optionnel)
+# ============================================
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASSWORD=your_app_password
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+
+# ============================================
+# WEBHOOK (optionnel)
+# ============================================
+WEBHOOK_URL=https://your-webhook-endpoint.com/alert
+WEBHOOK_TOKEN=your_webhook_token
+
+# ============================================
+# APIS EXTERNES (optionnel)
+# ============================================
+# Reddit (créer une app sur https://www.reddit.com/prefs/apps)
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT=SentinelPi/1.0
+
+# Mastodon (obtenir un token sur votre instance)
+MASTODON_ACCESS_TOKEN=
+MASTODON_INSTANCE_URL=https://mastodon.social
+
+# Twitter/X (si disponible)
+TWITTER_BEARER_TOKEN=
+
+# ============================================
+# BASE DE DONNÉES
+# ============================================
+# Par défaut SQLite, pas besoin de configurer
+# DATABASE_URL=sqlite+aiosqlite:///data/sentinelpi.db
+
+# ============================================
+# DASHBOARD
+# ============================================
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_PORT=8501
+
+# ============================================
+# DIVERS
+# ============================================
+# Niveau de log : DEBUG, INFO, WARNING, ERROR
+LOG_LEVEL=INFO
+# Fuseau horaire
+TZ=Europe/Paris

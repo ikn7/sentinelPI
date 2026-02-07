@@ -1,0 +1,224 @@
+"""Tests pour le collecteur Légifrance."""
+
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+
+# Données de test simulant une entrée RSS JORF
+MOCK_RSS_LOI = {
+    "title": "LOI n° 2024-123 du 15 janvier 2024 relative à la protection des données personnelles",
+    "summary": "Loi renforçant les obligations en matière de RGPD. NOR: JUSC2400123L",
+    "published": "2024-01-16T00:00:00+01:00",
+    "link": "https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000123456789",
+}
+
+MOCK_RSS_DECRET = {
+    "title": "Décret n° 2024-456 du 20 janvier 2024 portant application de la loi relative aux crypto-actifs",
+    "summary": "Application des dispositions sur les PSAN. NOR: ECOT2400456D",
+    "published": "2024-01-21T00:00:00+01:00",
+    "link": "https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000987654321",
+}
+
+MOCK_RSS_ARRETE = {
+    "title": "Arrêté du 25 janvier 2024 fixant les modalités de déclaration des incidents de cybersécurité",
+    "summary": "Obligations de notification à l'ANSSI.",
+    "published": "2024-01-26T00:00:00+01:00",
+    "link": "https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000111222333",
+}
+
+
+class TestLegifranceCollector:
+    """Tests pour LegifranceCollector."""
+
+    @pytest.fixture
+    def mock_settings(self):
+        """Mock des settings."""
+        mock_settings = MagicMock()
+        mock_settings.collection.rate_limits.legifrance = 10
+        mock_settings.collection.rate_limits.default = 10
+        mock_settings.collection.retry.max_attempts = 3
+        mock_settings.collection.retry.base_delay = 1
+        mock_settings.collection.retry.max_delay = 10
+        mock_settings.app.version = "1.0.0"
+
+        with patch("src.collectors.legifrance.get_settings", return_value=mock_settings):
+            with patch("src.utils.http.get_settings", return_value=mock_settings):
+                yield mock_settings
+
+    @pytest.fixture
+    def collector(self, mock_settings):
+        """Crée une instance du collecteur."""
+        from src.collectors.legifrance import LegifranceCollector
+        return LegifranceCollector()
+
+    def test_parse_french_date(self, collector):
+        """Test du parsing de date française."""
+        text = "Loi du 15 janvier 2024"
+        result = collector._parse_french_date(text)
+        assert result == date(2024, 1, 15)
+
+    def test_parse_french_date_mars(self, collector):
+        """Test du parsing de date française - mars."""
+        text = "Décret du 1 mars 2024"
+        result = collector._parse_french_date(text)
+        assert result == date(2024, 3, 1)
+
+    def test_parse_french_date_no_match(self, collector):
+        """Test du parsing de date française sans correspondance."""
+        text = "Texte sans date valide"
+        result = collector._parse_french_date(text)
+        assert result is None
+
+    def test_parse_iso_date(self, collector):
+        """Test du parsing de date ISO."""
+        result = collector._parse_iso_date("2024-01-15")
+        assert result == date(2024, 1, 15)
+
+    def test_parse_iso_date_with_time(self, collector):
+        """Test du parsing de date ISO avec heure."""
+        result = collector._parse_iso_date("2024-01-15T10:30:00")
+        assert result == date(2024, 1, 15)
+
+    def test_extract_nor(self, collector):
+        """Test de l'extraction du numéro NOR."""
+        text = "NOR: JUSC2400123L - Loi relative à..."
+        nor = collector._extract_nor(text)
+        assert nor == "JUSC2400123L"
+
+    def test_extract_nor_no_match(self, collector):
+        """Test de l'extraction NOR sans correspondance."""
+        text = "Texte sans numéro NOR"
+        nor = collector._extract_nor(text)
+        assert nor is None
+
+    def test_determine_text_type_loi(self, collector):
+        """Test de la détermination du type - loi."""
+        text_type = collector._determine_text_type("LOI n° 2024-123 du 15 janvier 2024")
+        assert text_type == "loi"
+
+    def test_determine_text_type_decret(self, collector):
+        """Test de la détermination du type - décret."""
+        text_type = collector._determine_text_type("Décret n° 2024-456 du 20 janvier 2024")
+        assert text_type == "decret"
+
+    def test_determine_text_type_arrete(self, collector):
+        """Test de la détermination du type - arrêté."""
+        text_type = collector._determine_text_type("Arrêté du 25 janvier 2024")
+        assert text_type == "arrete"
+
+    def test_determine_text_type_ordonnance(self, collector):
+        """Test de la détermination du type - ordonnance."""
+        text_type = collector._determine_text_type("Ordonnance n° 2024-789")
+        assert text_type == "ordonnance"
+
+    def test_determine_text_type_unknown(self, collector):
+        """Test de la détermination du type - inconnu."""
+        text_type = collector._determine_text_type("Texte quelconque")
+        assert text_type == "autre"
+
+    def test_extract_short_title_with_quotes(self, collector):
+        """Test de l'extraction du titre court avec guillemets."""
+        titre = 'LOI n° 2024-123 dite «loi numérique»'
+        short = collector._extract_short_title(titre)
+        assert short == "loi numérique"
+
+    def test_extract_short_title_long(self, collector):
+        """Test de l'extraction du titre court - titre long."""
+        titre = "A" * 150
+        short = collector._extract_short_title(titre)
+        assert len(short) == 100
+        assert short.endswith("...")
+
+    def test_parse_rss_entry_loi(self, collector):
+        """Test du parsing d'une entrée RSS - loi."""
+        entry = collector._parse_rss_entry(MOCK_RSS_LOI)
+
+        assert entry is not None
+        assert entry.type == "loi"
+        assert entry.numero == "JUSC2400123L"  # NOR
+        assert "protection des données" in entry.titre
+        assert entry.source == "legifrance"
+
+    def test_parse_rss_entry_decret(self, collector):
+        """Test du parsing d'une entrée RSS - décret."""
+        entry = collector._parse_rss_entry(MOCK_RSS_DECRET)
+
+        assert entry is not None
+        assert entry.type == "decret"
+        assert entry.numero == "ECOT2400456D"
+
+    def test_parse_rss_entry_arrete(self, collector):
+        """Test du parsing d'une entrée RSS - arrêté."""
+        entry = collector._parse_rss_entry(MOCK_RSS_ARRETE)
+
+        assert entry is not None
+        assert entry.type == "arrete"
+
+    def test_matches_sector_keywords(self, collector):
+        """Test de la correspondance avec les mots-clés."""
+        from src.collectors.legifrance import LegalText
+
+        text = LegalText(
+            type="loi",
+            numero="TEST",
+            titre="Loi relative aux données personnelles et au RGPD",
+            source="legifrance",
+        )
+
+        keywords = ["données personnelles", "RGPD", "vie privée"]
+        assert collector._matches_sector_keywords(text, keywords) is True
+
+    def test_matches_sector_keywords_no_match(self, collector):
+        """Test de la non-correspondance avec les mots-clés."""
+        from src.collectors.legifrance import LegalText
+
+        text = LegalText(
+            type="loi",
+            numero="TEST",
+            titre="Loi relative à l'agriculture",
+            source="legifrance",
+        )
+
+        keywords = ["données personnelles", "RGPD"]
+        assert collector._matches_sector_keywords(text, keywords) is False
+
+    @pytest.mark.asyncio
+    async def test_collect_for_competitor_not_applicable(self, collector, mock_settings):
+        """Test que collect_for_competitor retourne vide."""
+        results = await collector.collect_for_competitor("123456789")
+        assert results == []
+
+
+class TestLegalTextTypes:
+    """Tests pour les types de textes juridiques."""
+
+    def test_all_types_defined(self):
+        """Vérifie que tous les types sont définis."""
+        from src.collectors.legifrance import TEXT_TYPES
+
+        expected_types = {
+            "loi", "ordonnance", "decret", "arrete",
+            "reglement_ue", "directive_ue", "decision",
+            "avis", "circulaire"
+        }
+
+        actual_types = set(TEXT_TYPES.values())
+        assert expected_types.issubset(actual_types)
+
+
+class TestLegifranceRssFeeds:
+    """Tests pour les flux RSS Légifrance."""
+
+    def test_feeds_defined(self):
+        """Vérifie que les flux RSS sont définis."""
+        from src.collectors.legifrance import LEGIFRANCE_RSS_FEEDS
+
+        assert "jorf" in LEGIFRANCE_RSS_FEEDS
+        assert "lois" in LEGIFRANCE_RSS_FEEDS
+        assert "decrets" in LEGIFRANCE_RSS_FEEDS
+        assert "arretes" in LEGIFRANCE_RSS_FEEDS
+
+        for url in LEGIFRANCE_RSS_FEEDS.values():
+            assert url.startswith("https://")

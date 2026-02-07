@@ -1,0 +1,123 @@
+# Configuration des secteurs d'activité pour la veille réglementaire
+# Définissez les secteurs pertinents avec leurs mots-clés et autorités de référence
+
+sectors:
+  - id: "fintech"
+    nom: "Services financiers et Fintech"
+    description: "Secteur bancaire, paiements, investissements, assurances"
+    actif: true
+    mots_cles:
+      - "paiement"
+      - "banque"
+      - "crédit"
+      - "investissement"
+      - "assurance"
+      - "fintech"
+      - "crypto"
+      - "blockchain"
+      - "monnaie électronique"
+      - "services de paiement"
+    codes_naf:
+      - "64"
+      - "65"
+      - "66"
+    autorites:
+      - nom: "AMF"
+        url: "https://www.amf-france.org"
+        flux_rss: "https://www.amf-france.org/fr/rss"
+      - nom: "ACPR"
+        url: "https://acpr.banque-france.fr"
+    mots_cles_legifrance:
+      - "établissement de crédit"
+      - "prestataire de services de paiement"
+      - "services d'investissement"
+      - "lutte contre le blanchiment"
+      - "LCB-FT"
+      - "PSAN"
+      - "crypto-actifs"
+
+  - id: "tech"
+    nom: "Technologies et Numérique"
+    description: "Protection des données, cybersécurité, IA, cloud"
+    actif: true
+    mots_cles:
+      - "données personnelles"
+      - "RGPD"
+      - "cybersécurité"
+      - "intelligence artificielle"
+      - "cloud"
+      - "hébergement"
+      - "numérique"
+      - "plateforme"
+      - "algorithme"
+    codes_naf:
+      - "62"
+      - "63"
+    autorites:
+      - nom: "CNIL"
+        url: "https://www.cnil.fr"
+        flux_rss: "https://www.cnil.fr/fr/rss.xml"
+      - nom: "ANSSI"
+        url: "https://www.ssi.gouv.fr"
+      - nom: "ARCOM"
+        url: "https://www.arcom.fr"
+    mots_cles_legifrance:
+      - "données à caractère personnel"
+      - "traitement automatisé"
+      - "hébergeur"
+      - "plateforme en ligne"
+      - "intelligence artificielle"
+      - "cybersécurité"
+
+  - id: "sante"
+    nom: "Santé et Pharma"
+    description: "Industrie pharmaceutique, dispositifs médicaux, e-santé"
+    actif: false
+    mots_cles:
+      - "médicament"
+      - "dispositif médical"
+      - "essai clinique"
+      - "AMM"
+      - "pharmacovigilance"
+      - "e-santé"
+      - "télémédecine"
+    codes_naf:
+      - "21"
+      - "86"
+    autorites:
+      - nom: "ANSM"
+        url: "https://ansm.sante.fr"
+      - nom: "HAS"
+        url: "https://www.has-sante.fr"
+    mots_cles_legifrance:
+      - "autorisation de mise sur le marché"
+      - "essai clinique"
+      - "dispositif médical"
+      - "établissement de santé"
+
+  - id: "energie"
+    nom: "Énergie et Environnement"
+    description: "Énergies renouvelables, transition écologique, réglementation environnementale"
+    actif: false
+    mots_cles:
+      - "énergie renouvelable"
+      - "transition énergétique"
+      - "carbone"
+      - "émissions"
+      - "environnement"
+      - "biodiversité"
+      - "ICPE"
+    codes_naf:
+      - "35"
+      - "38"
+      - "39"
+    autorites:
+      - nom: "CRE"
+        url: "https://www.cre.fr"
+      - nom: "ADEME"
+        url: "https://www.ademe.fr"
+    mots_cles_legifrance:
+      - "installation classée"
+      - "énergies renouvelables"
+      - "émission de gaz à effet de serre"
+      - "bilan carbone"

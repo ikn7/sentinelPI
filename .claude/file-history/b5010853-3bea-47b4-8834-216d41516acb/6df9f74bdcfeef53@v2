@@ -1,0 +1,687 @@
+"""
+Advanced statistics components for SentinelPi dashboard.
+
+Provides interactive charts and analytics using Plotly.
+"""
+
+from __future__ import annotations
+
+import json
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+
+def render_statistics_page(run_async_fn) -> None:
+    """
+    Render the advanced statistics page.
+
+    Args:
+        run_async_fn: Function to run async coroutines.
+    """
+    st.header("📊 Statistiques avancées")
+
+    # Period selector
+    col1, col2, col3 = st.columns([1, 1, 4])
+    with col1:
+        period = st.selectbox(
+            "Periode",
+            options=["week", "month", "quarter", "year"],
+            format_func=lambda x: {
+                "week": "7 jours",
+                "month": "30 jours",
+                "quarter": "90 jours",
+                "year": "365 jours",
+            }.get(x, x),
+            index=1,
+            label_visibility="collapsed",
+        )
+    with col2:
+        if st.button("🔄 Actualiser", use_container_width=True):
+            st.rerun()
+
+    # Load statistics
+    stats = run_async_fn(get_advanced_stats(period))
+
+    # KPI row
+    render_kpi_cards(stats)
+
+    st.divider()
+
+    # Charts layout
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 Tendances",
+        "📡 Sources",
+        "🏷️ Mots-cles",
+        "🔔 Alertes",
+    ])
+
+    with tab1:
+        render_trends_tab(stats, period)
+
+    with tab2:
+        render_sources_tab(stats)
+
+    with tab3:
+        render_keywords_tab(stats, run_async_fn, period)
+
+    with tab4:
+        render_alerts_tab(stats)
+
+
+def render_kpi_cards(stats: dict) -> None:
+    """Render KPI cards at the top."""
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        delta_items = stats.get("items_delta", 0)
+        delta_str = f"+{delta_items}" if delta_items >= 0 else str(delta_items)
+        st.metric(
+            label="Items collectes",
+            value=f"{stats['items_count']:,}",
+            delta=f"{delta_str} vs periode prec.",
+        )
+
+    with col2:
+        st.metric(
+            label="Sources actives",
+            value=stats["sources_count"],
+            delta=f"{stats['sources_healthy']} OK / {stats['sources_error']} erreur",
+        )
+
+    with col3:
+        st.metric(
+            label="Alertes",
+            value=stats["alerts_count"],
+            delta=f"{stats.get('critical_alerts', 0)} critiques",
+            delta_color="inverse" if stats.get("critical_alerts", 0) > 0 else "off",
+        )
+
+    with col4:
+        avg_score = stats.get("avg_score", 0)
+        st.metric(
+            label="Score moyen",
+            value=f"{avg_score:.1f}",
+            help="Score de pertinence moyen des items",
+        )
+
+    with col5:
+        st.metric(
+            label="Base de données",
+            value=f"{stats.get('db_size_mb', 0):.1f} MB",
+            help="Taille de la base de données",
+        )
+
+
+def render_trends_tab(stats: dict, period: str) -> None:
+    """Render the trends charts tab."""
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Items par jour")
+        items_per_day = stats.get("items_per_day", [])
+        if items_per_day:
+            fig = px.area(
+                x=[d["date"] for d in items_per_day],
+                y=[d["count"] for d in items_per_day],
+                labels={"x": "Date", "y": "Items"},
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=20, b=40),
+                height=300,
+                showlegend=False,
+            )
+            fig.update_traces(
+                fill="tozeroy",
+                line_color="#4f8bf9",
+                fillcolor="rgba(79, 139, 249, 0.2)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas de données pour cette periode")
+
+    with col2:
+        st.subheader("Alertes par jour")
+        alerts_per_day = stats.get("alerts_per_day", [])
+        if alerts_per_day:
+            fig = px.bar(
+                x=[d["date"] for d in alerts_per_day],
+                y=[d["count"] for d in alerts_per_day],
+                labels={"x": "Date", "y": "Alertes"},
+                color_discrete_sequence=["#ff6b6b"],
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=20, b=40),
+                height=300,
+                showlegend=False,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas d'alertes pour cette periode")
+
+    # Cumulative chart
+    st.subheader("Evolution cumulative")
+    if items_per_day:
+        cumulative = []
+        total = 0
+        for d in items_per_day:
+            total += d["count"]
+            cumulative.append({"date": d["date"], "cumulative": total})
+
+        fig = px.line(
+            x=[d["date"] for d in cumulative],
+            y=[d["cumulative"] for d in cumulative],
+            labels={"x": "Date", "y": "Total items"},
+        )
+        fig.update_layout(
+            margin=dict(l=20, r=20, t=20, b=40),
+            height=250,
+            showlegend=False,
+        )
+        fig.update_traces(line_color="#2ecc71", line_width=2)
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def render_sources_tab(stats: dict) -> None:
+    """Render the sources analysis tab."""
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Items par source")
+        items_by_source = stats.get("items_by_source", [])
+        if items_by_source:
+            fig = px.bar(
+                x=[s[1] for s in items_by_source],
+                y=[s[0] for s in items_by_source],
+                orientation="h",
+                labels={"x": "Items", "y": "Source"},
+                color=[s[1] for s in items_by_source],
+                color_continuous_scale="Blues",
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=20, b=40),
+                height=400,
+                showlegend=False,
+                coloraxis_showscale=False,
+                yaxis=dict(categoryorder="total ascending"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas de données")
+
+    with col2:
+        st.subheader("Repartition par categorie")
+        items_by_category = stats.get("items_by_category", [])
+        if items_by_category:
+            fig = px.pie(
+                values=[c[1] for c in items_by_category],
+                names=[c[0] or "Non categorise" for c in items_by_category],
+                hole=0.4,
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=20, b=40),
+                height=400,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas de données")
+
+    # Score by source
+    st.subheader("Score moyen par source")
+    score_by_source = stats.get("score_by_source", [])
+    if score_by_source:
+        fig = px.bar(
+            x=[s[0] for s in score_by_source],
+            y=[s[1] for s in score_by_source],
+            labels={"x": "Source", "y": "Score moyen"},
+            color=[s[1] for s in score_by_source],
+            color_continuous_scale="RdYlGn",
+        )
+        fig.update_layout(
+            margin=dict(l=20, r=20, t=20, b=80),
+            height=300,
+            showlegend=False,
+            xaxis_tickangle=-45,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def render_keywords_tab(stats: dict, run_async_fn, period: str) -> None:
+    """Render the keywords analysis tab."""
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Top mots-clés")
+        top_keywords = stats.get("top_keywords", [])
+        if top_keywords:
+            fig = px.bar(
+                x=[k[1] for k in top_keywords[:15]],
+                y=[k[0] for k in top_keywords[:15]],
+                orientation="h",
+                labels={"x": "Occurrences", "y": "Mot-cle"},
+                color=[k[1] for k in top_keywords[:15]],
+                color_continuous_scale="Viridis",
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=20, b=40),
+                height=450,
+                showlegend=False,
+                coloraxis_showscale=False,
+                yaxis=dict(categoryorder="total ascending"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas de mots-clés extraits")
+
+    with col2:
+        st.subheader("Nuage de mots-clés")
+        if top_keywords:
+            # Create a treemap as word cloud alternative
+            fig = px.treemap(
+                names=[k[0] for k in top_keywords[:30]],
+                parents=["" for _ in top_keywords[:30]],
+                values=[k[1] for k in top_keywords[:30]],
+            )
+            fig.update_layout(
+                margin=dict(l=10, r=10, t=10, b=10),
+                height=450,
+            )
+            fig.update_traces(
+                textinfo="label+value",
+                hovertemplate="<b>%{label}</b><br>Occurrences: %{value}<extra></extra>",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas de mots-clés extraits")
+
+    # Keyword trends
+    st.subheader("Evolution des mots-clés")
+    keyword_trends = stats.get("keyword_trends", {})
+    if keyword_trends:
+        # Multi-line chart for top 5 keywords
+        fig = go.Figure()
+        colors = ["#4f8bf9", "#ff6b6b", "#2ecc71", "#f39c12", "#9b59b6"]
+
+        for i, (keyword, data) in enumerate(list(keyword_trends.items())[:5]):
+            fig.add_trace(go.Scatter(
+                x=[d["date"] for d in data],
+                y=[d["count"] for d in data],
+                mode="lines+markers",
+                name=keyword,
+                line=dict(color=colors[i % len(colors)], width=2),
+                marker=dict(size=6),
+            ))
+
+        fig.update_layout(
+            margin=dict(l=20, r=20, t=20, b=40),
+            height=300,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis_title="Date",
+            yaxis_title="Occurrences",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Pas assez de données pour les tendances")
+
+
+def render_alerts_tab(stats: dict) -> None:
+    """Render the alerts analysis tab."""
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Alertes par severite")
+        alerts_by_severity = stats.get("alerts_by_severity", {})
+        if any(alerts_by_severity.values()):
+            severity_colors = {
+                "info": "#3498db",
+                "notice": "#2ecc71",
+                "warning": "#f39c12",
+                "critical": "#e74c3c",
+            }
+            fig = px.pie(
+                values=list(alerts_by_severity.values()),
+                names=[s.upper() for s in alerts_by_severity.keys()],
+                color=list(alerts_by_severity.keys()),
+                color_discrete_map={k.upper(): v for k, v in severity_colors.items()},
+                hole=0.4,
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=20, b=40),
+                height=350,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas d'alertes")
+
+    with col2:
+        st.subheader("Alertes par filtre")
+        alerts_by_filter = stats.get("alerts_by_filter", [])
+        if alerts_by_filter:
+            fig = px.bar(
+                x=[f[1] for f in alerts_by_filter],
+                y=[f[0] for f in alerts_by_filter],
+                orientation="h",
+                labels={"x": "Alertes", "y": "Filtre"},
+                color_discrete_sequence=["#e74c3c"],
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=20, b=40),
+                height=350,
+                showlegend=False,
+                yaxis=dict(categoryorder="total ascending"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Pas d'alertes avec filtres")
+
+    # Alert timeline
+    st.subheader("Timeline des alertes")
+    alerts_timeline = stats.get("alerts_timeline", [])
+    if alerts_timeline:
+        severity_colors = {
+            "info": "#3498db",
+            "notice": "#2ecc71",
+            "warning": "#f39c12",
+            "critical": "#e74c3c",
+        }
+
+        fig = go.Figure()
+
+        for severity in ["critical", "warning", "notice", "info"]:
+            sev_data = [a for a in alerts_timeline if a["severity"] == severity]
+            if sev_data:
+                fig.add_trace(go.Scatter(
+                    x=[a["date"] for a in sev_data],
+                    y=[a["count"] for a in sev_data],
+                    mode="lines",
+                    name=severity.upper(),
+                    line=dict(color=severity_colors.get(severity, "#999")),
+                    stackgroup="one",
+                ))
+
+        fig.update_layout(
+            margin=dict(l=20, r=20, t=20, b=40),
+            height=300,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis_title="Date",
+            yaxis_title="Alertes",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+async def get_advanced_stats(period: str = "month") -> dict[str, Any]:
+    """
+    Get advanced statistics for the dashboard.
+
+    Args:
+        period: Time period (week, month, quarter, year).
+
+    Returns:
+        Dictionary with all statistics.
+    """
+    from sqlalchemy import func, select
+
+    from src.storage.database import get_database_stats, get_session, init_database
+    from src.storage.models import Alert, AlertSeverity, Filter, Item, ItemStatus, Source
+
+    await init_database()
+
+    now_utc = datetime.now(timezone.utc)
+    days_map = {"week": 7, "month": 30, "quarter": 90, "year": 365}
+    days = days_map.get(period, 30)
+    cutoff = now_utc - timedelta(days=days)
+    prev_cutoff = cutoff - timedelta(days=days)
+
+    async with get_session() as session:
+        # Basic counts
+        result = await session.execute(
+            select(func.count(Item.id)).where(Item.collected_at >= cutoff)
+        )
+        items_count = result.scalar() or 0
+
+        # Previous period count for delta
+        result = await session.execute(
+            select(func.count(Item.id)).where(
+                Item.collected_at >= prev_cutoff,
+                Item.collected_at < cutoff,
+            )
+        )
+        prev_items_count = result.scalar() or 0
+        items_delta = items_count - prev_items_count
+
+        result = await session.execute(
+            select(func.count(Alert.id)).where(Alert.created_at >= cutoff)
+        )
+        alerts_count = result.scalar() or 0
+
+        result = await session.execute(
+            select(func.count(Source.id)).where(Source.enabled == True)
+        )
+        sources_count = result.scalar() or 0
+
+        # Sources health
+        result = await session.execute(select(Source).where(Source.enabled == True))
+        all_sources = result.scalars().all()
+        sources_healthy = sum(1 for s in all_sources if s.consecutive_errors == 0)
+        sources_error = sum(1 for s in all_sources if s.consecutive_errors > 0)
+
+        # Critical alerts
+        result = await session.execute(
+            select(func.count(Alert.id)).where(
+                Alert.created_at >= cutoff,
+                Alert.severity == AlertSeverity.CRITICAL,
+            )
+        )
+        critical_alerts = result.scalar() or 0
+
+        # Average score
+        result = await session.execute(
+            select(func.avg(Item.relevance_score)).where(Item.collected_at >= cutoff)
+        )
+        avg_score = result.scalar() or 0
+
+        # Items per day
+        items_per_day = []
+        for i in range(days, 0, -1):
+            day_start = (now_utc - timedelta(days=i)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            day_end = day_start + timedelta(days=1)
+            result = await session.execute(
+                select(func.count(Item.id)).where(
+                    Item.collected_at >= day_start,
+                    Item.collected_at < day_end,
+                )
+            )
+            count = result.scalar() or 0
+            items_per_day.append({
+                "date": day_start.strftime("%d/%m"),
+                "count": count,
+            })
+
+        # Alerts per day
+        alerts_per_day = []
+        for i in range(days, 0, -1):
+            day_start = (now_utc - timedelta(days=i)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            day_end = day_start + timedelta(days=1)
+            result = await session.execute(
+                select(func.count(Alert.id)).where(
+                    Alert.created_at >= day_start,
+                    Alert.created_at < day_end,
+                )
+            )
+            count = result.scalar() or 0
+            alerts_per_day.append({
+                "date": day_start.strftime("%d/%m"),
+                "count": count,
+            })
+
+        # Items by source
+        result = await session.execute(
+            select(Source.name, func.count(Item.id).label("count"))
+            .join(Item, Item.source_id == Source.id)
+            .where(Item.collected_at >= cutoff)
+            .group_by(Source.id)
+            .order_by(func.count(Item.id).desc())
+            .limit(10)
+        )
+        items_by_source = result.all()
+
+        # Items by category
+        result = await session.execute(
+            select(Source.category, func.count(Item.id).label("count"))
+            .join(Item, Item.source_id == Source.id)
+            .where(Item.collected_at >= cutoff)
+            .group_by(Source.category)
+            .order_by(func.count(Item.id).desc())
+        )
+        items_by_category = result.all()
+
+        # Score by source
+        result = await session.execute(
+            select(Source.name, func.avg(Item.relevance_score).label("avg_score"))
+            .join(Item, Item.source_id == Source.id)
+            .where(Item.collected_at >= cutoff)
+            .group_by(Source.id)
+            .order_by(func.avg(Item.relevance_score).desc())
+            .limit(10)
+        )
+        score_by_source = [(row[0], round(row[1] or 0, 1)) for row in result.all()]
+
+        # Alerts by severity
+        alerts_by_severity = {}
+        for sev in AlertSeverity:
+            result = await session.execute(
+                select(func.count(Alert.id)).where(
+                    Alert.created_at >= cutoff,
+                    Alert.severity == sev,
+                )
+            )
+            alerts_by_severity[sev.value] = result.scalar() or 0
+
+        # Alerts by filter
+        result = await session.execute(
+            select(Filter.name, func.count(Alert.id).label("count"))
+            .join(Alert, Alert.filter_id == Filter.id)
+            .where(Alert.created_at >= cutoff)
+            .group_by(Filter.id)
+            .order_by(func.count(Alert.id).desc())
+            .limit(10)
+        )
+        alerts_by_filter = result.all()
+
+        # Alerts timeline by severity
+        alerts_timeline = []
+        for i in range(min(days, 30), 0, -1):  # Max 30 days for timeline
+            day_start = (now_utc - timedelta(days=i)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            day_end = day_start + timedelta(days=1)
+
+            for sev in AlertSeverity:
+                result = await session.execute(
+                    select(func.count(Alert.id)).where(
+                        Alert.created_at >= day_start,
+                        Alert.created_at < day_end,
+                        Alert.severity == sev,
+                    )
+                )
+                count = result.scalar() or 0
+                if count > 0:
+                    alerts_timeline.append({
+                        "date": day_start.strftime("%d/%m"),
+                        "severity": sev.value,
+                        "count": count,
+                    })
+
+        # Top keywords
+        result = await session.execute(
+            select(Item.keywords_json)
+            .where(Item.collected_at >= cutoff, Item.keywords_json.isnot(None))
+            .limit(1000)
+        )
+        keyword_rows = result.scalars().all()
+        kw_counter = Counter()
+        for kw_json in keyword_rows:
+            try:
+                kws = json.loads(kw_json)
+                if isinstance(kws, list):
+                    kw_counter.update(kws)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        top_keywords = kw_counter.most_common(30)
+
+        # Keyword trends (top 5 keywords over time)
+        keyword_trends = {}
+        top_5_keywords = [k[0] for k in top_keywords[:5]]
+
+        for keyword in top_5_keywords:
+            keyword_data = []
+            # Group by week for better visualization
+            step = max(1, days // 10)  # ~10 data points
+            for i in range(0, days, step):
+                period_start = (now_utc - timedelta(days=days - i)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                period_end = period_start + timedelta(days=step)
+
+                result = await session.execute(
+                    select(Item.keywords_json).where(
+                        Item.collected_at >= period_start,
+                        Item.collected_at < period_end,
+                        Item.keywords_json.isnot(None),
+                    )
+                )
+                period_keywords = result.scalars().all()
+                count = 0
+                for kw_json in period_keywords:
+                    try:
+                        kws = json.loads(kw_json)
+                        if isinstance(kws, list) and keyword in kws:
+                            count += 1
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                keyword_data.append({
+                    "date": period_start.strftime("%d/%m"),
+                    "count": count,
+                })
+
+            keyword_trends[keyword] = keyword_data
+
+        # DB stats
+        try:
+            db_stats = await get_database_stats()
+        except Exception:
+            db_stats = {"size_mb": 0}
+
+        return {
+            "items_count": items_count,
+            "items_delta": items_delta,
+            "alerts_count": alerts_count,
+            "sources_count": sources_count,
+            "sources_healthy": sources_healthy,
+            "sources_error": sources_error,
+            "critical_alerts": critical_alerts,
+            "avg_score": avg_score,
+            "items_per_day": items_per_day,
+            "alerts_per_day": alerts_per_day,
+            "items_by_source": items_by_source,
+            "items_by_category": items_by_category,
+            "score_by_source": score_by_source,
+            "alerts_by_severity": alerts_by_severity,
+            "alerts_by_filter": alerts_by_filter,
+            "alerts_timeline": alerts_timeline,
+            "top_keywords": top_keywords,
+            "keyword_trends": keyword_trends,
+            "db_size_mb": db_stats.get("size_mb", 0),
+        }

@@ -1,0 +1,72 @@
+"""Configuration du système de logging avec loguru."""
+
+import sys
+from pathlib import Path
+from typing import Optional
+
+from loguru import logger
+
+
+def setup_logging(
+    level: str = "INFO",
+    log_format: str = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+    rotation: str = "10 MB",
+    retention: str = "30 days",
+    log_dir: Optional[Path] = None,
+) -> None:
+    """Configure le système de logging.
+
+    Args:
+        level: Niveau de log (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+        log_format: Format des messages de log.
+        rotation: Taille ou durée avant rotation du fichier.
+        retention: Durée de conservation des anciens logs.
+        log_dir: Répertoire des fichiers de log.
+    """
+    # Supprimer le handler par défaut
+    logger.remove()
+
+    # Handler console avec couleurs
+    logger.add(
+        sys.stderr,
+        format=log_format,
+        level=level,
+        colorize=True,
+    )
+
+    # Handler fichier si log_dir spécifié
+    if log_dir:
+        log_dir = Path(log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Log principal
+        logger.add(
+            log_dir / "stratwatch.log",
+            format=log_format,
+            level=level,
+            rotation=rotation,
+            retention=retention,
+            compression="gz",
+        )
+
+        # Log des erreurs séparé
+        logger.add(
+            log_dir / "errors.log",
+            format=log_format,
+            level="ERROR",
+            rotation=rotation,
+            retention=retention,
+            compression="gz",
+        )
+
+
+def get_logger(name: str) -> "logger":
+    """Retourne un logger contextualisé.
+
+    Args:
+        name: Nom du module ou composant.
+
+    Returns:
+        Logger avec contexte.
+    """
+    return logger.bind(module=name)

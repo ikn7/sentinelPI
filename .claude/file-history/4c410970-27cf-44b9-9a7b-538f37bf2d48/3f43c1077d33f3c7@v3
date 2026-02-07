@@ -1,0 +1,20 @@
+Package: sentinelpi
+Version: 1.0.1
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.11), python3-pip, python3-venv, sqlite3
+Maintainer: SentinelPi Team <contact@sentinelpi.io>
+Description: Station de veille multi-sources autonome
+ SentinelPi est une station de veille multi-sources autonome
+ conçue pour le Raspberry Pi. Elle collecte, filtre, score et
+ vous alerte automatiquement sur les contenus les plus pertinents.
+ .
+ Fonctionnalités:
+  - Agrégation multi-sources (RSS, Web, Reddit, Mastodon, YouTube)
+  - Filtrage intelligent par mots-clés et regex
+  - Scoring de pertinence automatique
+  - Apprentissage des préférences utilisateur
+  - Alertes Telegram, Email, Webhook
+  - Dashboard web Streamlit
+Homepage: https://github.com/sentinelpi/sentinelpi

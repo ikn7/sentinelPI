@@ -1,0 +1,298 @@
+"""
+Feed component for the SentinelPi dashboard.
+
+Displays collected items in a compact feed format.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from datetime import datetime
+from html import unescape
+from typing import Any, Sequence
+
+import streamlit as st
+
+from src.storage.models import Item, ItemStatus, Source
+from src.utils.dates import format_relative
+
+
+def _run_async(coro):
+    """Run async coroutine from sync context."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and decode entities from text."""
+    if not text:
+        return ""
+    # Remove HTML tags
+    clean = re.sub(r"<[^>]+>", " ", text)
+    # Decode HTML entities
+    clean = unescape(clean)
+    # Collapse whitespace
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
+
+
+async def _mark_item_read(item_id: str) -> None:
+    """Mark an item as read in the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+    from src.utils.dates import now
+
+    async with get_session() as session:
+        await session.execute(
+            update(Item)
+            .where(Item.id == item_id)
+            .values(status=ItemStatus.READ, read_at=now())
+        )
+        await session.commit()
+
+
+async def _archive_item(item_id: str) -> None:
+    """Archive an item in the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+
+    async with get_session() as session:
+        await session.execute(
+            update(Item)
+            .where(Item.id == item_id)
+            .values(status=ItemStatus.ARCHIVED)
+        )
+        await session.commit()
+
+
+async def _delete_item(item_id: str) -> None:
+    """Delete an item from the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import delete
+
+    async with get_session() as session:
+        await session.execute(delete(Item).where(Item.id == item_id))
+        await session.commit()
+
+
+async def _toggle_star(item_id: str, current_starred: bool) -> None:
+    """Toggle starred state for an item."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+
+    async with get_session() as session:
+        await session.execute(
+            update(Item)
+            .where(Item.id == item_id)
+            .values(starred=not current_starred)
+        )
+        await session.commit()
+
+
+def render_item_card(
+    item: Item | dict[str, Any],
+    source: Source | dict[str, Any] | None = None,
+    show_actions: bool = True,
+) -> None:
+    """Render a single item as a compact row."""
+    # Handle both Item objects and dicts
+    if isinstance(item, dict):
+        title = item.get("title", "Sans titre")
+        url = item.get("url")
+        summary = item.get("summary") or item.get("content", "")[:200]
+        author = item.get("author")
+        published_at = item.get("published_at")
+        relevance_score = item.get("relevance_score", 0)
+        starred = item.get("starred", False)
+        item_id = item.get("id", "")
+    else:
+        title = item.title
+        url = item.url
+        summary = item.summary or (item.content[:200] if item.content else "")
+        author = item.author
+        published_at = item.published_at
+        relevance_score = item.relevance_score
+        starred = item.starred
+        item_id = item.id
+
+    # Strip HTML from title and summary
+    title = _strip_html(title)
+    summary = _strip_html(summary)
+
+    # Truncate summary
+    if len(summary) > 300:
+        summary = summary[:300] + "..."
+
+    # Source info
+    source_name = ""
+    if source:
+        source_name = source.get("name") if isinstance(source, dict) else source.name
+
+    # Score badge
+    if relevance_score > 70:
+        score_badge = f"🟢{relevance_score:.0f}"
+    elif relevance_score > 40:
+        score_badge = f"🟡{relevance_score:.0f}"
+    elif relevance_score > 0:
+        score_badge = f"⚪{relevance_score:.0f}"
+    else:
+        score_badge = ""
+
+    # Build metadata line
+    meta_parts = []
+    if source_name:
+        meta_parts.append(source_name)
+    if author:
+        meta_parts.append(author)
+    if published_at:
+        if isinstance(published_at, str):
+            meta_parts.append(published_at)
+        else:
+            meta_parts.append(format_relative(published_at))
+    if score_badge:
+        meta_parts.append(score_badge)
+
+    # Single-line: title + inline actions via HTML
+    star = "⭐ " if starred else ""
+    link_title = f"[{title}]({url})" if url else title
+
+    # Title row with actions on same line
+    col_title, col_actions = st.columns([7, 3])
+    with col_title:
+        st.markdown(f"**{star}{link_title}**")
+    with col_actions:
+        if show_actions:
+            c1, c2, c3, c4, c5 = st.columns(5)
+            with c1:
+                if st.button("⭐", key=f"s_{item_id}", help="Favoris"):
+                    _run_async(_toggle_star(item_id, starred))
+                    st.rerun()
+            with c2:
+                if st.button("✅", key=f"r_{item_id}", help="Lu"):
+                    _run_async(_mark_item_read(item_id))
+                    st.rerun()
+            with c3:
+                if st.button("📁", key=f"a_{item_id}", help="Archiver"):
+                    _run_async(_archive_item(item_id))
+                    st.rerun()
+            with c4:
+                if st.button("🗑", key=f"d_{item_id}", help="Supprimer"):
+                    _run_async(_delete_item(item_id))
+                    st.rerun()
+            with c5:
+                if url:
+                    st.link_button("🔗", url, help="Ouvrir")
+
+    # Metadata
+    if meta_parts:
+        st.caption(" · ".join(meta_parts))
+
+    # Summary
+    if summary:
+        st.markdown(f'<p style="margin:-8px 0 2px 0;font-size:0.85em;color:#555;">{summary}</p>', unsafe_allow_html=True)
+
+    st.divider()
+
+
+def render_feed(
+    items: Sequence[Item | dict[str, Any]],
+    sources: dict[str, Source | dict[str, Any]] | None = None,
+    page_size: int = 20,
+) -> None:
+    """Render a feed of items."""
+    if not items:
+        st.info("Aucun item.", icon="ℹ️")
+        return
+
+    sources = sources or {}
+
+    # Pagination
+    total_items = len(items)
+    total_pages = (total_items + page_size - 1) // page_size
+
+    if "feed_page" not in st.session_state:
+        st.session_state.feed_page = 0
+
+    # Page items
+    start_idx = st.session_state.feed_page * page_size
+    end_idx = min(start_idx + page_size, total_items)
+    page_items = items[start_idx:end_idx]
+
+    # Render items
+    for item in page_items:
+        if isinstance(item, dict):
+            source_id = item.get("source_id", "")
+        else:
+            source_id = item.source_id
+
+        source = sources.get(source_id)
+        render_item_card(item, source)
+
+    # Pagination controls
+    if total_pages > 1:
+        col1, col2, col3 = st.columns([1, 2, 1])
+
+        with col1:
+            if st.button("⬅️ Précédent", disabled=st.session_state.feed_page == 0):
+                st.session_state.feed_page -= 1
+                st.rerun()
+
+        with col2:
+            page_select = st.selectbox(
+                "Page",
+                options=range(total_pages),
+                index=st.session_state.feed_page,
+                format_func=lambda x: f"Page {x + 1}/{total_pages}",
+                label_visibility="collapsed",
+            )
+            if page_select != st.session_state.feed_page:
+                st.session_state.feed_page = page_select
+                st.rerun()
+
+        with col3:
+            if st.button("Suivant ➡️", disabled=st.session_state.feed_page >= total_pages - 1):
+                st.session_state.feed_page += 1
+                st.rerun()
+
+
+def render_compact_feed(
+    items: Sequence[Item | dict[str, Any]],
+    max_items: int = 10,
+) -> None:
+    """Render a compact feed (for widgets/sidebars)."""
+    if not items:
+        st.caption("Aucun item recent")
+        return
+
+    for item in items[:max_items]:
+        if isinstance(item, dict):
+            title = _strip_html(item.get("title", "Sans titre"))
+            url = item.get("url")
+            published_at = item.get("published_at")
+        else:
+            title = _strip_html(item.title)
+            url = item.url
+            published_at = item.published_at
+
+        if len(title) > 60:
+            title = title[:57] + "..."
+
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            if url:
+                st.markdown(f"[{title}]({url})")
+            else:
+                st.text(title)
+
+        with col2:
+            if published_at:
+                if isinstance(published_at, datetime):
+                    st.caption(format_relative(published_at))
+                else:
+                    st.caption(published_at)

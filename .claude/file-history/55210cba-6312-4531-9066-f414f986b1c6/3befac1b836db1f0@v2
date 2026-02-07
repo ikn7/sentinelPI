@@ -1,0 +1,61 @@
+# StratWatch - Dépendances Python
+# Installez avec: pip install -r requirements.txt
+
+# Core
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+
+# Database
+sqlalchemy>=2.0.23
+alembic>=1.13.0
+aiosqlite>=0.19.0
+
+# HTTP & Async
+httpx>=0.26.0
+tenacity>=8.2.3
+aiofiles>=23.2.1
+
+# Parsing
+beautifulsoup4>=4.12.2
+lxml>=5.0.0
+feedparser>=6.0.10
+python-dateutil>=2.8.2
+
+# NLP (optionnel - installer séparément sur Raspberry Pi)
+# spacy>=3.7.2
+
+# API
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Dashboard
+streamlit>=1.30.0
+
+# Alerting
+python-telegram-bot>=20.7
+aiosmtplib>=3.0.1
+
+# Reporting
+jinja2>=3.1.2
+weasyprint>=60.2
+markdown>=3.5.1
+
+# Scheduling
+apscheduler>=3.10.4
+
+# Logging
+loguru>=0.7.2
+
+# CLI
+click>=8.1.7
+
+# Dev dependencies (optionnel)
+# pytest>=7.4.4
+# pytest-asyncio>=0.23.3
+# pytest-cov>=4.1.0
+# pytest-mock>=3.12.0
+# respx>=0.20.2
+# ruff>=0.1.11
+# mypy>=1.8.0

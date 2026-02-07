@@ -1,0 +1,475 @@
+"""Système de configuration centralisé avec Pydantic Settings et YAML."""
+
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+import yaml
+from pydantic import BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# =============================================================================
+# Chemins de base
+# =============================================================================
+
+def get_project_root() -> Path:
+    """Retourne le répertoire racine du projet."""
+    return Path(__file__).parent.parent
+
+
+PROJECT_ROOT = get_project_root()
+CONFIG_DIR = PROJECT_ROOT / "config"
+DATA_DIR = PROJECT_ROOT / "data"
+LOGS_DIR = PROJECT_ROOT / "logs"
+
+
+# =============================================================================
+# Modèles de configuration imbriqués
+# =============================================================================
+
+class AppConfig(BaseModel):
+    """Configuration de l'application."""
+
+    name: str = "StratWatch"
+    version: str = "1.0.0"
+    environment: str = "production"
+    timezone: str = "Europe/Paris"
+    language: str = "fr"
+
+
+class SQLiteConfig(BaseModel):
+    """Configuration SQLite."""
+
+    path: str = "data/stratwatch.db"
+
+
+class PostgreSQLConfig(BaseModel):
+    """Configuration PostgreSQL."""
+
+    host: str = "localhost"
+    port: int = 5432
+    database: str = "stratwatch"
+    user: str = ""
+    password: str = ""
+
+
+class DatabaseConfig(BaseModel):
+    """Configuration de la base de données."""
+
+    type: str = "sqlite"
+    sqlite: SQLiteConfig = Field(default_factory=SQLiteConfig)
+    postgresql: PostgreSQLConfig = Field(default_factory=PostgreSQLConfig)
+
+    def get_url(self, project_root: Path) -> str:
+        """Retourne l'URL de connexion à la base de données.
+
+        Args:
+            project_root: Chemin racine du projet.
+
+        Returns:
+            URL de connexion SQLAlchemy.
+        """
+        if self.type == "sqlite":
+            db_path = project_root / self.sqlite.path
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            return f"sqlite+aiosqlite:///{db_path}"
+        elif self.type == "postgresql":
+            pg = self.postgresql
+            return f"postgresql+asyncpg://{pg.user}:{pg.password}@{pg.host}:{pg.port}/{pg.database}"
+        else:
+            raise ValueError(f"Type de base de données non supporté: {self.type}")
+
+
+class CollectionIntervalsConfig(BaseModel):
+    """Intervalles de collecte en minutes."""
+
+    legal_data: int = 1440
+    job_offers: int = 360
+    news: int = 60
+    regulations: int = 720
+    patents: int = 1440
+
+
+class RateLimitsConfig(BaseModel):
+    """Limites de requêtes par minute."""
+
+    default: int = 10
+    pappers: int = 5
+    legifrance: int = 10
+    google_news: int = 5
+
+
+class RetryConfig(BaseModel):
+    """Configuration des tentatives de retry."""
+
+    max_attempts: int = 3
+    base_delay: int = 5
+    max_delay: int = 60
+
+
+class CollectionConfig(BaseModel):
+    """Configuration de la collecte de données."""
+
+    intervals: CollectionIntervalsConfig = Field(default_factory=CollectionIntervalsConfig)
+    rate_limits: RateLimitsConfig = Field(default_factory=RateLimitsConfig)
+    retry: RetryConfig = Field(default_factory=RetryConfig)
+
+
+class NLPConfig(BaseModel):
+    """Configuration NLP."""
+
+    model: str = "fr_core_news_md"
+    batch_size: int = 100
+
+
+class SentimentConfig(BaseModel):
+    """Configuration de l'analyse de sentiment."""
+
+    enabled: bool = True
+    threshold_negative: float = -0.3
+    threshold_positive: float = 0.3
+
+
+class ProcessingConfig(BaseModel):
+    """Configuration du traitement des données."""
+
+    nlp: NLPConfig = Field(default_factory=NLPConfig)
+    sentiment: SentimentConfig = Field(default_factory=SentimentConfig)
+
+
+class TelegramConfig(BaseModel):
+    """Configuration Telegram."""
+
+    enabled: bool = True
+    bot_token: str = ""
+    chat_id: str = ""
+    min_severity: str = "attention"
+
+
+class EmailConfig(BaseModel):
+    """Configuration Email."""
+
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    username: str = ""
+    password: str = ""
+    from_address: str = ""
+    to_addresses: list[str] = Field(default_factory=list)
+    min_severity: str = "important"
+
+
+class AlertChannelsConfig(BaseModel):
+    """Configuration des canaux d'alerte."""
+
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
+
+
+class RecrutementMassifRule(BaseModel):
+    """Règle pour le recrutement massif."""
+
+    threshold: int = 5
+    period_days: int = 30
+
+
+class EcheanceRule(BaseModel):
+    """Règle pour les échéances."""
+
+    days_before: int = 30
+
+
+class AlertRulesConfig(BaseModel):
+    """Configuration des règles d'alerte."""
+
+    recrutement_massif: RecrutementMassifRule = Field(default_factory=RecrutementMassifRule)
+    echeance_proche: EcheanceRule = Field(default_factory=lambda: EcheanceRule(days_before=30))
+    echeance_imminente: EcheanceRule = Field(default_factory=lambda: EcheanceRule(days_before=7))
+
+
+class AlertingConfig(BaseModel):
+    """Configuration des alertes."""
+
+    enabled: bool = True
+    channels: AlertChannelsConfig = Field(default_factory=AlertChannelsConfig)
+    rules: AlertRulesConfig = Field(default_factory=AlertRulesConfig)
+
+
+class ReportingConfig(BaseModel):
+    """Configuration des rapports."""
+
+    auto_generate: bool = True
+    schedule: str = "weekly"
+    day_of_week: int = 1
+    hour: int = 8
+    formats: list[str] = Field(default_factory=lambda: ["html", "pdf"])
+    email_report: bool = False
+
+
+class APIConfig(BaseModel):
+    """Configuration de l'API."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8000
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+
+
+class DashboardConfig(BaseModel):
+    """Configuration du dashboard."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8501
+
+
+class LoggingConfig(BaseModel):
+    """Configuration des logs."""
+
+    level: str = "INFO"
+    format: str = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+    rotation: str = "10 MB"
+    retention: str = "30 days"
+
+
+# =============================================================================
+# Configuration principale
+# =============================================================================
+
+class Settings(BaseSettings):
+    """Configuration principale de StratWatch.
+
+    Charge la configuration depuis :
+    1. Variables d'environnement (priorité haute)
+    2. Fichier .env
+    3. Fichier config/settings.yaml (priorité basse)
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="STRATWATCH_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Configuration chargée depuis YAML
+    app: AppConfig = Field(default_factory=AppConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    collection: CollectionConfig = Field(default_factory=CollectionConfig)
+    processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
+    alerting: AlertingConfig = Field(default_factory=AlertingConfig)
+    reporting: ReportingConfig = Field(default_factory=ReportingConfig)
+    api: APIConfig = Field(default_factory=APIConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+
+    # Variables d'environnement directes
+    pappers_api_key: str = Field(default="", alias="PAPPERS_API_KEY")
+    inpi_api_key: str = Field(default="", alias="INPI_API_KEY")
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str = Field(default="", alias="SMTP_USER")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    email_from: str = Field(default="", alias="EMAIL_FROM")
+    email_to: str = Field(default="", alias="EMAIL_TO")
+    api_secret_key: str = Field(default="", alias="API_SECRET_KEY")
+    data_dir: Optional[str] = Field(default=None, alias="DATA_DIR")
+    log_dir: Optional[str] = Field(default=None, alias="LOG_DIR")
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialise les settings en chargeant le fichier YAML."""
+        yaml_config = self._load_yaml_config()
+        merged_config = {**yaml_config, **kwargs}
+        super().__init__(**merged_config)
+        self._apply_env_overrides()
+
+    @staticmethod
+    def _load_yaml_config() -> dict[str, Any]:
+        """Charge la configuration depuis le fichier YAML.
+
+        Returns:
+            Dictionnaire de configuration.
+        """
+        config_path = CONFIG_DIR / "settings.yaml"
+        if not config_path.exists():
+            return {}
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        # Résoudre les variables d'environnement dans le YAML
+        return Settings._resolve_env_vars(config)
+
+    @staticmethod
+    def _resolve_env_vars(config: dict[str, Any]) -> dict[str, Any]:
+        """Résout les variables d'environnement ${VAR} dans la configuration.
+
+        Args:
+            config: Dictionnaire de configuration.
+
+        Returns:
+            Configuration avec variables résolues.
+        """
+        def resolve_value(value: Any) -> Any:
+            if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+                env_var = value[2:-1]
+                return os.environ.get(env_var, "")
+            elif isinstance(value, dict):
+                return {k: resolve_value(v) for k, v in value.items()}
+            elif isinstance(value, list):
+                return [resolve_value(item) for item in value]
+            return value
+
+        return {k: resolve_value(v) for k, v in config.items()}
+
+    def _apply_env_overrides(self) -> None:
+        """Applique les surcharges depuis les variables d'environnement."""
+        # Appliquer les tokens Telegram depuis les variables d'environnement
+        if self.telegram_bot_token:
+            self.alerting.channels.telegram.bot_token = self.telegram_bot_token
+        if self.telegram_chat_id:
+            self.alerting.channels.telegram.chat_id = self.telegram_chat_id
+
+        # Appliquer la configuration email
+        if self.smtp_host:
+            self.alerting.channels.email.smtp_host = self.smtp_host
+        if self.smtp_port:
+            self.alerting.channels.email.smtp_port = self.smtp_port
+        if self.smtp_user:
+            self.alerting.channels.email.username = self.smtp_user
+        if self.smtp_password:
+            self.alerting.channels.email.password = self.smtp_password
+        if self.email_from:
+            self.alerting.channels.email.from_address = self.email_from
+        if self.email_to:
+            self.alerting.channels.email.to_addresses = [self.email_to]
+
+    def get_database_url(self) -> str:
+        """Retourne l'URL de connexion à la base de données."""
+        return self.database.get_url(PROJECT_ROOT)
+
+    def get_data_dir(self) -> Path:
+        """Retourne le répertoire des données."""
+        if self.data_dir:
+            return Path(self.data_dir)
+        return DATA_DIR
+
+    def get_log_dir(self) -> Path:
+        """Retourne le répertoire des logs."""
+        if self.log_dir:
+            return Path(self.log_dir)
+        return LOGS_DIR
+
+
+# =============================================================================
+# Chargement des fichiers de configuration auxiliaires
+# =============================================================================
+
+class CompetitorConfig(BaseModel):
+    """Configuration d'un concurrent."""
+
+    siren: str
+    nom: str
+    priorite: int = 1
+    site_web: Optional[str] = None
+    mots_cles_presse: list[str] = Field(default_factory=list)
+    linkedin_company_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CompetitorsConfig(BaseModel):
+    """Configuration de la liste des concurrents."""
+
+    competitors: list[CompetitorConfig] = Field(default_factory=list)
+
+
+class AutoriteConfig(BaseModel):
+    """Configuration d'une autorité de régulation."""
+
+    nom: str
+    url: str
+    flux_rss: Optional[str] = None
+
+
+class SectorConfig(BaseModel):
+    """Configuration d'un secteur."""
+
+    id: str
+    nom: str
+    description: Optional[str] = None
+    actif: bool = True
+    mots_cles: list[str] = Field(default_factory=list)
+    codes_naf: list[str] = Field(default_factory=list)
+    autorites: list[AutoriteConfig] = Field(default_factory=list)
+    mots_cles_legifrance: list[str] = Field(default_factory=list)
+
+
+class SectorsConfig(BaseModel):
+    """Configuration des secteurs."""
+
+    sectors: list[SectorConfig] = Field(default_factory=list)
+
+
+def load_competitors() -> CompetitorsConfig:
+    """Charge la configuration des concurrents.
+
+    Returns:
+        Configuration des concurrents.
+    """
+    config_path = CONFIG_DIR / "competitors.yaml"
+    if not config_path.exists():
+        return CompetitorsConfig()
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    return CompetitorsConfig(**data)
+
+
+def load_sectors() -> SectorsConfig:
+    """Charge la configuration des secteurs.
+
+    Returns:
+        Configuration des secteurs.
+    """
+    config_path = CONFIG_DIR / "sectors.yaml"
+    if not config_path.exists():
+        return SectorsConfig()
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    return SectorsConfig(**data)
+
+
+# =============================================================================
+# Instance globale
+# =============================================================================
+
+_settings: Optional[Settings] = None
+
+
+def get_settings() -> Settings:
+    """Retourne l'instance globale des settings (singleton).
+
+    Returns:
+        Instance Settings.
+    """
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings
+
+
+def reload_settings() -> Settings:
+    """Recharge les settings depuis les fichiers.
+
+    Returns:
+        Nouvelle instance Settings.
+    """
+    global _settings
+    _settings = Settings()
+    return _settings

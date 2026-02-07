@@ -1,0 +1,677 @@
+"""
+SQLAlchemy models for SentinelPi.
+
+Defines the database schema for sources, items, filters, and alerts.
+"""
+
+from __future__ import annotations
+
+import enum
+import json
+import uuid
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+# ==================================================
+# Enums
+# ==================================================
+
+class SourceType(enum.Enum):
+    """Types of data sources."""
+    RSS = "rss"
+    WEB = "web"
+    TWITTER = "twitter"
+    MASTODON = "mastodon"
+    REDDIT = "reddit"
+    YOUTUBE = "youtube"
+    CUSTOM = "custom"
+
+
+class ItemStatus(enum.Enum):
+    """
+    Workflow status of collected items.
+
+    Represents the reading/processing state of an item:
+    - NEW: Just collected, not yet viewed
+    - SEEN: Appeared in feed but not opened
+    - READ: User opened/read the item
+    - ARCHIVED: Saved for later reference
+    - DELETED: Marked for deletion
+
+    Note: "Starred/Favorite" is tracked separately via Item.starred boolean,
+    allowing an item to be starred regardless of its workflow status
+    (e.g., an item can be both READ and starred).
+    """
+    NEW = "new"
+    SEEN = "seen"
+    READ = "read"
+    ARCHIVED = "archived"
+    DELETED = "deleted"
+
+
+class FilterAction(enum.Enum):
+    """Actions that can be taken by filters."""
+    INCLUDE = "include"
+    EXCLUDE = "exclude"
+    HIGHLIGHT = "highlight"
+    TAG = "tag"
+    ALERT = "alert"
+
+
+class AlertSeverity(enum.Enum):
+    """Severity levels for alerts."""
+    INFO = "info"
+    NOTICE = "notice"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class AlertChannel(enum.Enum):
+    """Notification channels for alerts."""
+    TELEGRAM = "telegram"
+    EMAIL = "email"
+    WEBHOOK = "webhook"
+    DESKTOP = "desktop"
+
+
+# ==================================================
+# Base Model
+# ==================================================
+
+class Base(DeclarativeBase):
+    """Base class for all models."""
+    pass
+
+
+# ==================================================
+# Utility Functions
+# ==================================================
+
+def generate_uuid() -> str:
+    """Generate a new UUID string."""
+    return str(uuid.uuid4())
+
+
+def json_loads_safe(value: str | None) -> Any:
+    """Safely load JSON, returning None on failure."""
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def json_dumps_safe(value: Any) -> str | None:
+    """Safely dump to JSON, returning None for None input."""
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False)
+
+
+# ==================================================
+# Source Model
+# ==================================================
+
+class Source(Base):
+    """
+    A data source to monitor.
+
+    Sources can be RSS feeds, web pages, social media accounts, etc.
+    """
+    __tablename__ = "sources"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    type: Mapped[SourceType] = mapped_column(Enum(SourceType))
+    url: Mapped[str] = mapped_column(Text)
+
+    # Type-specific configuration (JSON)
+    config_json: Mapped[str | None] = mapped_column("config", Text)
+
+    # Collection parameters
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    priority: Mapped[int] = mapped_column(Integer, default=2)
+
+    # Organization
+    category: Mapped[str | None] = mapped_column(String(100), index=True)
+    tags_json: Mapped[str | None] = mapped_column("tags", Text)
+
+    # State tracking
+    last_check: Mapped[datetime | None] = mapped_column(DateTime)
+    last_success: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    consecutive_errors: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Relationships
+    items: Mapped[list["Item"]] = relationship(
+        back_populates="source",
+        cascade="all, delete-orphan",
+        lazy="dynamic",
+    )
+
+    # Indexes
+    __table_args__ = (
+        Index("ix_sources_enabled_priority", "enabled", "priority"),
+        Index("ix_sources_type_enabled", "type", "enabled"),
+    )
+
+    @property
+    def config(self) -> dict[str, Any]:
+        """Get the parsed configuration dictionary."""
+        return json_loads_safe(self.config_json) or {}
+
+    @config.setter
+    def config(self, value: dict[str, Any]) -> None:
+        """Set the configuration from a dictionary."""
+        self.config_json = json_dumps_safe(value)
+
+    @property
+    def tags(self) -> list[str]:
+        """Get the list of tags."""
+        return json_loads_safe(self.tags_json) or []
+
+    @tags.setter
+    def tags(self, value: list[str]) -> None:
+        """Set the tags from a list."""
+        self.tags_json = json_dumps_safe(value)
+
+    def __repr__(self) -> str:
+        return f"<Source(id={self.id!r}, name={self.name!r}, type={self.type.value!r})>"
+
+
+# ==================================================
+# Item Model
+# ==================================================
+
+class Item(Base):
+    """
+    A collected item from a source.
+
+    Items represent individual pieces of content (articles, posts, videos, etc.).
+    """
+    __tablename__ = "items"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("sources.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    # Deduplication identifiers
+    guid: Mapped[str] = mapped_column(String(512), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+
+    # Content
+    title: Mapped[str] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(Text)
+    author: Mapped[str | None] = mapped_column(String(255))
+    content: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+
+    # Media
+    image_url: Mapped[str | None] = mapped_column(Text)
+    media_urls_json: Mapped[str | None] = mapped_column("media_urls", Text)
+
+    # Dates
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        index=True,
+    )
+
+    # Analysis
+    language: Mapped[str | None] = mapped_column(String(10))
+    keywords_json: Mapped[str | None] = mapped_column("keywords", Text)
+    entities_json: Mapped[str | None] = mapped_column("entities", Text)
+    sentiment: Mapped[str | None] = mapped_column(String(20))
+    sentiment_score: Mapped[float | None] = mapped_column(Float)
+
+    # Scoring and filtering
+    relevance_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    matched_filters_json: Mapped[str | None] = mapped_column("matched_filters", Text)
+
+    # User state
+    # status: Workflow state (NEW → SEEN → READ → ARCHIVED/DELETED)
+    status: Mapped[ItemStatus] = mapped_column(
+        Enum(ItemStatus),
+        default=ItemStatus.NEW,
+        index=True,
+    )
+    # starred: Favorite flag (orthogonal to status - item can be READ + starred)
+    # Starred items are preserved during cleanup regardless of age
+    starred: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    # User-assigned tags (in addition to filter-assigned)
+    user_tags_json: Mapped[str | None] = mapped_column("user_tags", Text)
+
+    # Relationships
+    source: Mapped["Source"] = relationship(back_populates="items")
+    alerts: Mapped[list["Alert"]] = relationship(
+        back_populates="item",
+        cascade="all, delete-orphan",
+    )
+
+    # Indexes for common query patterns
+    __table_args__ = (
+        # Feed queries: filter by source, sort by date
+        Index("ix_items_source_collected", "source_id", "collected_at"),
+        # Feed queries: filter by status, sort by date
+        Index("ix_items_status_collected", "status", "collected_at"),
+        # Deduplication: check existing by GUID within source
+        Index("ix_items_guid_source", "guid", "source_id"),
+        # Starred items feed: filter starred, sort by date
+        Index("ix_items_starred_collected", "starred", "collected_at"),
+        # Relevance sorting: high score items first
+        Index("ix_items_score_collected", "relevance_score", "collected_at"),
+    )
+
+    @property
+    def media_urls(self) -> list[str]:
+        """Get the list of media URLs."""
+        return json_loads_safe(self.media_urls_json) or []
+
+    @media_urls.setter
+    def media_urls(self, value: list[str]) -> None:
+        """Set the media URLs from a list."""
+        self.media_urls_json = json_dumps_safe(value)
+
+    @property
+    def keywords(self) -> list[str]:
+        """Get the list of extracted keywords."""
+        return json_loads_safe(self.keywords_json) or []
+
+    @keywords.setter
+    def keywords(self, value: list[str]) -> None:
+        """Set the keywords from a list."""
+        self.keywords_json = json_dumps_safe(value)
+
+    @property
+    def entities(self) -> dict[str, list[str]]:
+        """Get the extracted entities (persons, orgs, locations)."""
+        return json_loads_safe(self.entities_json) or {}
+
+    @entities.setter
+    def entities(self, value: dict[str, list[str]]) -> None:
+        """Set the entities from a dictionary."""
+        self.entities_json = json_dumps_safe(value)
+
+    @property
+    def matched_filters(self) -> list[str]:
+        """Get the list of matched filter IDs."""
+        return json_loads_safe(self.matched_filters_json) or []
+
+    @matched_filters.setter
+    def matched_filters(self, value: list[str]) -> None:
+        """Set the matched filters from a list."""
+        self.matched_filters_json = json_dumps_safe(value)
+
+    @property
+    def user_tags(self) -> list[str]:
+        """Get the list of user-assigned tags."""
+        return json_loads_safe(self.user_tags_json) or []
+
+    @user_tags.setter
+    def user_tags(self, value: list[str]) -> None:
+        """Set the user tags from a list."""
+        self.user_tags_json = json_dumps_safe(value)
+
+    def __repr__(self) -> str:
+        return f"<Item(id={self.id!r}, title={self.title[:50]!r}...)>"
+
+
+# ==================================================
+# Filter Model
+# ==================================================
+
+class Filter(Base):
+    """
+    A filtering rule for items.
+
+    Filters can include/exclude items, add tags, or trigger alerts.
+    """
+    __tablename__ = "filters"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+
+    # Targeting (which sources/categories to apply to)
+    source_ids_json: Mapped[str | None] = mapped_column("source_ids", Text)
+    categories_json: Mapped[str | None] = mapped_column("categories", Text)
+
+    # Conditions (JSON structure)
+    conditions_json: Mapped[str] = mapped_column("conditions", Text)
+
+    # Action
+    action: Mapped[FilterAction] = mapped_column(Enum(FilterAction))
+    action_params_json: Mapped[str | None] = mapped_column("action_params", Text)
+
+    # Scoring
+    score_modifier: Mapped[float] = mapped_column(Float, default=0.0)
+
+    # State
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Indexes
+    __table_args__ = (
+        Index("ix_filters_enabled_priority", "enabled", "priority"),
+    )
+
+    @property
+    def source_ids(self) -> list[str] | None:
+        """Get the list of source IDs this filter applies to."""
+        return json_loads_safe(self.source_ids_json)
+
+    @source_ids.setter
+    def source_ids(self, value: list[str] | None) -> None:
+        """Set the source IDs from a list."""
+        self.source_ids_json = json_dumps_safe(value)
+
+    @property
+    def categories(self) -> list[str] | None:
+        """Get the list of categories this filter applies to."""
+        return json_loads_safe(self.categories_json)
+
+    @categories.setter
+    def categories(self, value: list[str] | None) -> None:
+        """Set the categories from a list."""
+        self.categories_json = json_dumps_safe(value)
+
+    @property
+    def conditions(self) -> dict[str, Any]:
+        """Get the filter conditions."""
+        return json_loads_safe(self.conditions_json) or {}
+
+    @conditions.setter
+    def conditions(self, value: dict[str, Any]) -> None:
+        """Set the filter conditions."""
+        self.conditions_json = json_dumps_safe(value)
+
+    @property
+    def action_params(self) -> dict[str, Any]:
+        """Get the action parameters."""
+        return json_loads_safe(self.action_params_json) or {}
+
+    @action_params.setter
+    def action_params(self, value: dict[str, Any]) -> None:
+        """Set the action parameters."""
+        self.action_params_json = json_dumps_safe(value)
+
+    def __repr__(self) -> str:
+        return f"<Filter(id={self.id!r}, name={self.name!r}, action={self.action.value!r})>"
+
+
+# ==================================================
+# Alert Model
+# ==================================================
+
+class Alert(Base):
+    """
+    An alert generated from a filter match.
+
+    Alerts track notifications sent to various channels.
+    """
+    __tablename__ = "alerts"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+    item_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
+    filter_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("filters.id", ondelete="SET NULL"),
+    )
+
+    severity: Mapped[AlertSeverity] = mapped_column(Enum(AlertSeverity), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Notification tracking
+    channels_notified_json: Mapped[str | None] = mapped_column("channels_notified", Text)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        index=True,
+    )
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Relationships
+    item: Mapped["Item | None"] = relationship(back_populates="alerts")
+
+    # Indexes
+    __table_args__ = (
+        Index("ix_alerts_severity_created", "severity", "created_at"),
+    )
+
+    @property
+    def channels_notified(self) -> list[str]:
+        """Get the list of channels that were notified."""
+        return json_loads_safe(self.channels_notified_json) or []
+
+    @channels_notified.setter
+    def channels_notified(self, value: list[str]) -> None:
+        """Set the notified channels from a list."""
+        self.channels_notified_json = json_dumps_safe(value)
+
+    def __repr__(self) -> str:
+        return f"<Alert(id={self.id!r}, severity={self.severity.value!r}, title={self.title[:30]!r}...)>"
+
+
+# ==================================================
+# Report Model (for tracking generated reports)
+# ==================================================
+
+# ==================================================
+# Preference Learning Models
+# ==================================================
+
+class UserPreference(Base):
+    """
+    Learned user preference for a feature.
+
+    Tracks weighted preferences for keywords, sources, categories, and authors.
+    """
+    __tablename__ = "user_preferences"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+    feature_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        index=True,
+    )  # 'keyword', 'source', 'category', 'author'
+    feature_value: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    weight: Mapped[float] = mapped_column(Float, default=0.0)  # -1.0 to +1.0
+    positive_count: Mapped[int] = mapped_column(Integer, default=0)
+    negative_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_updated: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("ix_user_prefs_type_value", "feature_type", "feature_value", unique=True),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserPreference({self.feature_type}={self.feature_value}, weight={self.weight:.2f})>"
+
+
+class UserAction(Base):
+    """
+    Record of a user action on an item.
+
+    Tracks actions like star, read, archive, delete, ignore for learning.
+    """
+    __tablename__ = "user_actions"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+    item_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("items.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    action_type: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        index=True,
+    )  # 'star', 'read', 'archive', 'delete', 'ignore'
+    action_value: Mapped[float] = mapped_column(Float, nullable=False)  # Signal value
+    created_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("ix_user_actions_item_type", "item_id", "action_type"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserAction({self.action_type} on {self.item_id[:8]}...)>"
+
+
+class LearningState(Base):
+    """
+    Key-value store for learning system state.
+
+    Tracks things like last batch processing time, total actions, etc.
+    """
+    __tablename__ = "learning_state"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    def __repr__(self) -> str:
+        return f"<LearningState({self.key}={self.value})>"
+
+
+# ==================================================
+# Report Model (for tracking generated reports)
+# ==================================================
+
+class Report(Base):
+    """
+    A generated report.
+
+    Tracks periodic reports (daily, weekly, etc.).
+    """
+    __tablename__ = "reports"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=generate_uuid,
+    )
+    report_type: Mapped[str] = mapped_column(String(50), index=True)  # daily, weekly, custom
+    title: Mapped[str] = mapped_column(String(255))
+
+    # Period covered
+    period_start: Mapped[datetime] = mapped_column(DateTime)
+    period_end: Mapped[datetime] = mapped_column(DateTime)
+
+    # Content
+    item_count: Mapped[int] = mapped_column(Integer)
+    alert_count: Mapped[int] = mapped_column(Integer)
+    file_path: Mapped[str | None] = mapped_column(Text)  # Path to generated file
+
+    # Statistics (JSON)
+    stats_json: Mapped[str | None] = mapped_column("stats", Text)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        index=True,
+    )
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """Get the report statistics."""
+        return json_loads_safe(self.stats_json) or {}
+
+    @stats.setter
+    def stats(self, value: dict[str, Any]) -> None:
+        """Set the report statistics."""
+        self.stats_json = json_dumps_safe(value)
+
+    def __repr__(self) -> str:
+        return f"<Report(id={self.id!r}, type={self.report_type!r}, title={self.title!r})>"

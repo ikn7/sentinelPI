@@ -1,0 +1,255 @@
+"""Dispatcher de notifications multi-canal pour StratWatch.
+
+Coordonne l'envoi des alertes via différents canaux (Telegram, Email, Webhook).
+"""
+
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.alerting.email import EmailNotifier
+from src.alerting.rules import AlertEngine
+from src.alerting.telegram import TelegramNotifier
+from src.config import get_settings
+from src.storage.models import Alert
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class NotificationResult:
+    """Résultat d'une notification."""
+
+    channel: str
+    success: bool
+    alert_id: str
+    error: Optional[str] = None
+
+
+class NotificationDispatcher:
+    """Dispatcher de notifications multi-canal.
+
+    Gère l'envoi des alertes via tous les canaux configurés
+    et suit leur état de notification.
+
+    Example:
+        dispatcher = NotificationDispatcher(session)
+        await dispatcher.process_pending_alerts()
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialise le dispatcher.
+
+        Args:
+            session: Session SQLAlchemy.
+        """
+        self._session = session
+        self._settings = get_settings()
+        self._logger = get_logger("alerting.dispatcher")
+
+        # Initialiser les notifiers
+        self._telegram = TelegramNotifier()
+        self._email = EmailNotifier()
+
+        # État
+        self._results: list[NotificationResult] = []
+
+    async def send_alert(self, alert: Alert) -> list[NotificationResult]:
+        """Envoie une alerte via tous les canaux configurés.
+
+        Args:
+            alert: Alerte à envoyer.
+
+        Returns:
+            Liste des résultats par canal.
+        """
+        results = []
+
+        # Telegram
+        if self._settings.alerting.channels.telegram.enabled:
+            try:
+                success = await self._telegram.send_alert(alert)
+                results.append(NotificationResult(
+                    channel="telegram",
+                    success=success,
+                    alert_id=alert.id,
+                ))
+            except Exception as e:
+                results.append(NotificationResult(
+                    channel="telegram",
+                    success=False,
+                    alert_id=alert.id,
+                    error=str(e),
+                ))
+
+        # Email
+        if self._settings.alerting.channels.email.enabled:
+            try:
+                success = await self._email.send_alert(alert)
+                results.append(NotificationResult(
+                    channel="email",
+                    success=success,
+                    alert_id=alert.id,
+                ))
+            except Exception as e:
+                results.append(NotificationResult(
+                    channel="email",
+                    success=False,
+                    alert_id=alert.id,
+                    error=str(e),
+                ))
+
+        return results
+
+    async def process_pending_alerts(self) -> dict[str, int]:
+        """Traite toutes les alertes en attente de notification.
+
+        Returns:
+            Statistiques de traitement.
+        """
+        engine = AlertEngine(self._session)
+
+        # Récupérer les alertes non notifiées
+        alerts = await engine.get_pending_alerts()
+
+        if not alerts:
+            self._logger.info("Aucune alerte en attente")
+            return {"total": 0, "sent": 0, "failed": 0}
+
+        self._logger.info(f"{len(alerts)} alertes en attente de notification")
+
+        sent = 0
+        failed = 0
+        notified_ids = []
+
+        for alert in alerts:
+            results = await self.send_alert(alert)
+
+            # Considérer comme notifié si au moins un canal a réussi
+            any_success = any(r.success for r in results)
+            if any_success:
+                sent += 1
+                notified_ids.append(alert.id)
+            else:
+                failed += 1
+
+            self._results.extend(results)
+
+            # Pause entre les alertes
+            await asyncio.sleep(0.1)
+
+        # Marquer comme notifiées
+        if notified_ids:
+            await engine.mark_as_notified(notified_ids)
+
+        stats = {
+            "total": len(alerts),
+            "sent": sent,
+            "failed": failed,
+        }
+
+        self._logger.info(f"Traitement terminé: {sent} envoyées, {failed} échouées")
+        return stats
+
+    async def send_digest(self, period: str = "daily") -> bool:
+        """Envoie un digest des alertes récentes.
+
+        Args:
+            period: Période du digest ("daily", "weekly").
+
+        Returns:
+            True si au moins un canal a réussi.
+        """
+        from datetime import timedelta
+
+        from sqlalchemy import select
+        from src.storage.models import Alert
+
+        # Déterminer la période
+        now = datetime.now()
+        if period == "weekly":
+            since = now - timedelta(days=7)
+            title = "Résumé hebdomadaire StratWatch"
+        else:
+            since = now - timedelta(days=1)
+            title = "Résumé quotidien StratWatch"
+
+        # Récupérer les alertes de la période
+        result = await self._session.execute(
+            select(Alert).where(
+                Alert.created_at >= since,
+            ).order_by(Alert.created_at.desc())
+        )
+        alerts = list(result.scalars().all())
+
+        if not alerts:
+            self._logger.info(f"Aucune alerte pour le digest {period}")
+            return True
+
+        self._logger.info(f"Envoi du digest {period}: {len(alerts)} alertes")
+
+        success = False
+
+        # Telegram
+        if self._settings.alerting.channels.telegram.enabled:
+            try:
+                if await self._telegram.send_digest(alerts, title):
+                    success = True
+            except Exception as e:
+                self._logger.error(f"Erreur digest Telegram: {e}")
+
+        # Email
+        if self._settings.alerting.channels.email.enabled:
+            try:
+                if await self._email.send_digest(alerts, title):
+                    success = True
+            except Exception as e:
+                self._logger.error(f"Erreur digest Email: {e}")
+
+        return success
+
+    async def test_channels(self) -> dict[str, bool]:
+        """Teste tous les canaux de notification.
+
+        Returns:
+            État de chaque canal.
+        """
+        results = {}
+
+        # Telegram
+        if self._settings.alerting.channels.telegram.enabled:
+            try:
+                results["telegram"] = await self._telegram.send_test_message()
+            except Exception as e:
+                self._logger.error(f"Test Telegram échoué: {e}")
+                results["telegram"] = False
+        else:
+            results["telegram"] = None  # Désactivé
+
+        # Email
+        if self._settings.alerting.channels.email.enabled:
+            try:
+                results["email"] = await self._email.send_test_email()
+            except Exception as e:
+                self._logger.error(f"Test Email échoué: {e}")
+                results["email"] = False
+        else:
+            results["email"] = None  # Désactivé
+
+        return results
+
+    def get_results(self) -> list[NotificationResult]:
+        """Retourne les résultats de notification.
+
+        Returns:
+            Liste des résultats.
+        """
+        return self._results.copy()
+
+    def clear_results(self) -> None:
+        """Efface les résultats de notification."""
+        self._results.clear()

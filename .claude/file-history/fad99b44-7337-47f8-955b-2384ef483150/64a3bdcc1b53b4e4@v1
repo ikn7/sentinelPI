@@ -1,0 +1,116 @@
+# Plan: Dashboard UI Improvements
+
+## 5 Changes to Implement
+
+### 1. Fix article action buttons - center emojis
+**File:** `src/dashboard/components/feed.py` (lines 262-330)
+
+Currently buttons use `st.button("⭐", ...)` in 7 narrow columns. The emojis aren't centered because Streamlit buttons have default padding/alignment.
+
+**Fix:** Add custom CSS to center button content in the action columns. Use `st.markdown` with custom CSS to apply `text-align: center` to button elements. Add a CSS block at the top of `render_item_card()` (or in the main app CSS) targeting button elements within the actions area:
+```css
+div[data-testid="column"] button {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    min-height: 2rem;
+}
+```
+
+### 2. Search bar on its own prominent line
+**File:** `src/dashboard/app.py` (lines 722-785)
+
+Currently the search bar shares one line with status, category, date, and refresh filters in a 5-column layout.
+
+**Fix:** Split into 2 rows:
+- **Row 1:** Full-width search bar with a larger, more prominent style (use `st.text_input` full width)
+- **Row 2:** 4-column layout `[1.2, 1.2, 2, 0.4]` for status, category, date range, and refresh button
+
+### 3. Source/Filter add/edit forms as `@st.dialog` popups
+**File:** `src/dashboard/app.py` (lines 840-887 for source add, 988-1040 for filter add, 1112-1174 for filter edit)
+
+Currently forms are inline `st.form` blocks that expand in-page.
+
+**Fix:** Convert each form to an `@st.dialog` decorated function:
+- `add_source_dialog()` - triggered by "➕ Ajouter" button via session state
+- `add_filter_dialog()` - triggered by "➕ Nouveau filtre" button
+- `edit_filter_dialog(filter_obj)` - triggered by "✏️" button on each filter row
+
+Each dialog:
+- Uses `@st.dialog("Title")` decorator
+- Contains the same form fields as currently
+- Calls `st.rerun()` on save/cancel to close
+- No more `show_add_source`/`show_add_filter` session state toggle logic needed
+
+**Note:** `@st.dialog` functions can't use `st.form` inside them (Streamlit limitation). Use regular `st.button` for submit instead.
+
+### 4. Full alerting configuration in settings page
+**File:** `src/dashboard/app.py` (lines 1439-1448, the "Alertes" tab in settings)
+
+Currently the Alertes tab only shows scheduler settings (enabled, report times). The actual alerting config (channels, aggregation, quiet hours, routing rules) is only editable in `config/alerts.yaml`.
+
+**Fix:** Replace the minimal "Alertes" tab with a comprehensive alerting configuration panel:
+
+**Sub-sections in the Alertes tab:**
+1. **General**: `enabled` toggle
+2. **Aggregation**: enabled, window_minutes, max_alerts_per_window
+3. **Quiet hours**: enabled, start time, end time, bypass_for_critical
+4. **Channels** (4 expandable sections):
+   - **Telegram**: enabled, bot_token, chat_id, min_severity, silent, disable_web_preview
+   - **Email**: enabled, smtp_host, smtp_port, use_tls, username, password, from_address, from_name, to_addresses, min_severity, subject_template, include_full_content
+   - **Webhook**: enabled, url, method, headers (as JSON textarea), min_severity, timeout, max_retries
+   - **Desktop**: enabled, min_severity, timeout
+5. **Routing rules**: Display existing rules, ability to add/remove rules (category/tags → channels)
+
+**Config loading/saving:**
+- Add `_load_alerts_yaml()` and `_save_alerts_yaml()` helper functions (similar to existing `_load_settings_yaml`/_save_settings_yaml`)
+- The alerting config is separate from settings.yaml - it lives in `config/alerts.yaml`
+- Move scheduler-related settings back to their proper tab
+
+### 5. Password protection with read-only guest mode
+**File:** `src/dashboard/app.py` (main function + new auth logic)
+
+**Implementation:**
+- Add `dashboard.password` field in `config/settings.yaml`
+- Hash the password with `hashlib.sha256` at save time
+- On app load (in `main()`), check `st.session_state.authenticated`
+- If not authenticated:
+  - Show a login form (password input + submit button)
+  - Option "Continuer en lecture seule" button that sets `st.session_state.read_only = True`
+- If authenticated: full access
+- If read_only: show feed page only, hide action buttons, hide settings/source/filter management, hide sidebar management pages
+
+**Read-only mode restrictions:**
+- `render_item_card()`: pass `show_actions=False`
+- `render_sidebar()`: Only show "📰 Flux" and "📊 Stats" navigation options
+- Hide all add/edit/delete buttons
+- Settings page inaccessible
+
+**Password management:**
+- Password configurable in settings page (when authenticated)
+- Store as SHA-256 hash in `config/settings.yaml` under `dashboard.password_hash`
+- Empty hash = no password required (backward compatible)
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/dashboard/components/feed.py` | CSS for centered buttons, conditional `show_actions` |
+| `src/dashboard/app.py` | Search layout, dialog forms, alerting config, auth system |
+| `config/settings.yaml` | Add `dashboard.password_hash` field |
+
+## Verification
+
+1. `venv/bin/python -c "import src.dashboard.app"` - verify no import errors
+2. Launch dashboard and verify:
+   - Article buttons have centered emojis
+   - Search bar is on its own prominent line above filters
+   - Add source/filter opens as a popup dialog
+   - Edit filter opens as a popup dialog
+   - Settings > Alertes tab shows full channel configuration
+   - Saving alerting config writes to `config/alerts.yaml`
+   - First load shows login screen
+   - "Lecture seule" shows feed without action buttons
+   - Correct password grants full access
+3. `venv/bin/python -m pytest tests/ -v` - all tests pass

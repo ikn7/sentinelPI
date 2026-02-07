@@ -1,0 +1,15 @@
+"""Module de gestion des alertes et notifications."""
+
+from src.alerting.dispatcher import NotificationDispatcher, NotificationResult
+from src.alerting.email import EmailNotifier
+from src.alerting.rules import AlertEngine, AlertRule
+from src.alerting.telegram import TelegramNotifier
+
+__all__ = [
+    "AlertEngine",
+    "AlertRule",
+    "EmailNotifier",
+    "NotificationDispatcher",
+    "NotificationResult",
+    "TelegramNotifier",
+]

@@ -1,0 +1,373 @@
+"""
+Alerts component for the SentinelPi dashboard.
+
+Displays alert history and notification status.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Sequence
+
+import streamlit as st
+
+from src.dashboard.utils import run_async
+from src.storage.models import Alert, AlertSeverity
+from src.utils.dates import format_relative, format_date
+
+
+# Alias pour compatibilité avec les imports externes
+_run_async = run_async
+
+
+async def _acknowledge_alert(alert_id: str) -> None:
+    """Acknowledge an alert in the database."""
+    from src.storage.database import get_session
+    from src.utils.dates import now
+    from sqlalchemy import update
+
+    async with get_session() as session:
+        await session.execute(
+            update(Alert)
+            .where(Alert.id == alert_id)
+            .values(acknowledged_at=now())
+        )
+        await session.commit()
+
+
+def get_severity_badge(severity: str | AlertSeverity) -> str:
+    """Get badge HTML for severity level."""
+    if isinstance(severity, AlertSeverity):
+        severity = severity.value
+
+    badges = {
+        "critical": ("🚨", "Critique", "#dc3545"),
+        "warning": ("⚠️", "Attention", "#ffc107"),
+        "notice": ("📢", "Notice", "#17a2b8"),
+        "info": ("ℹ️", "Info", "#6c757d"),
+    }
+
+    emoji, label, color = badges.get(severity, ("🔔", severity, "#6c757d"))
+    return f"{emoji} **{label}**"
+
+
+def render_alert_card(
+    alert: Alert | dict[str, Any],
+    show_actions: bool = True,
+) -> None:
+    """
+    Render a single alert as a card.
+
+    Args:
+        alert: Alert object or dictionary.
+        show_actions: Whether to show action buttons.
+    """
+    # Handle both Alert objects and dicts
+    if isinstance(alert, dict):
+        alert_id = alert.get("id", "")
+        severity = alert.get("severity", "notice")
+        title = alert.get("title", "Alerte")
+        message = alert.get("message", "")
+        created_at = alert.get("created_at")
+        notified_at = alert.get("notified_at")
+        acknowledged_at = alert.get("acknowledged_at")
+        channels = alert.get("channels_notified", [])
+        item_url = alert.get("item_url")
+        source_name = alert.get("source_name", "")
+        filter_name = alert.get("filter_name", "")
+    else:
+        alert_id = alert.id
+        severity = alert.severity.value if isinstance(alert.severity, AlertSeverity) else alert.severity
+        title = alert.title
+        message = alert.message
+        created_at = alert.created_at
+        notified_at = alert.notified_at
+        acknowledged_at = alert.acknowledged_at
+        channels = alert.channels_notified or []
+        item_url = None  # Would need to join with Item
+        source_name = ""
+        filter_name = ""
+
+    with st.container():
+        # Header
+        col1, col2, col3 = st.columns([2, 5, 2])
+
+        with col1:
+            st.markdown(get_severity_badge(severity))
+
+        with col2:
+            st.markdown(f"**{title}**")
+
+        with col3:
+            if created_at:
+                if isinstance(created_at, datetime):
+                    st.caption(format_relative(created_at))
+                else:
+                    st.caption(created_at)
+
+        # Details
+        if message:
+            st.markdown(message[:300] + "..." if len(message) > 300 else message)
+
+        # Metadata
+        meta_parts = []
+        if source_name:
+            meta_parts.append(f"📰 {source_name}")
+        if filter_name:
+            meta_parts.append(f"🎯 {filter_name}")
+
+        if meta_parts:
+            st.caption(" · ".join(meta_parts))
+
+        # Channels notified
+        if channels:
+            channel_icons = {
+                "telegram": "📱",
+                "email": "📧",
+                "webhook": "🔗",
+                "desktop": "🖥️",
+            }
+            channel_badges = " ".join(
+                f"{channel_icons.get(c, '📤')} {c}" for c in channels
+            )
+            st.caption(f"Notifié via: {channel_badges}")
+
+        # Status
+        if acknowledged_at:
+            st.success("✅ Acquittée", icon="✅")
+        elif notified_at:
+            st.info("📤 Envoyée", icon="📤")
+        else:
+            st.warning("⏳ En attente", icon="⏳")
+
+        # Actions
+        if show_actions:
+            col1, col2, col3 = st.columns([1, 1, 4])
+
+            with col1:
+                if not acknowledged_at:
+                    if st.button("✅ Acquitter", key=f"ack_{alert_id}"):
+                        _run_async(_acknowledge_alert(alert_id))
+                        st.toast("Alerte acquittée")
+                        st.rerun()
+
+            with col2:
+                if item_url:
+                    st.link_button("🔗 Voir", item_url)
+
+        st.divider()
+
+
+def render_alerts_list(
+    alerts: Sequence[Alert | dict[str, Any]],
+    page_size: int = 20,
+) -> None:
+    """
+    Render a list of alerts.
+
+    Args:
+        alerts: List of alerts to display.
+        page_size: Number of alerts per page.
+    """
+    if not alerts:
+        st.info("📭 Aucune alerte enregistrée.", icon="ℹ️")
+        return
+
+    # Pagination
+    total_alerts = len(alerts)
+    total_pages = (total_alerts + page_size - 1) // page_size
+
+    if "alerts_page" not in st.session_state:
+        st.session_state.alerts_page = 0
+
+    # Header
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.caption(f"🔔 {total_alerts} alertes")
+    with col2:
+        if total_pages > 1:
+            st.caption(f"Page {st.session_state.alerts_page + 1}/{total_pages}")
+
+    # Page alerts
+    start_idx = st.session_state.alerts_page * page_size
+    end_idx = min(start_idx + page_size, total_alerts)
+    page_alerts = alerts[start_idx:end_idx]
+
+    # Render alerts
+    for alert in page_alerts:
+        render_alert_card(alert)
+
+    # Pagination controls
+    if total_pages > 1:
+        col1, col2, col3 = st.columns([1, 2, 1])
+
+        with col1:
+            if st.button("⬅️ Précédent", disabled=st.session_state.alerts_page == 0, key="alerts_prev"):
+                st.session_state.alerts_page -= 1
+                st.rerun()
+
+        with col3:
+            if st.button("Suivant ➡️", disabled=st.session_state.alerts_page >= total_pages - 1, key="alerts_next"):
+                st.session_state.alerts_page += 1
+                st.rerun()
+
+
+def render_alerts_summary(
+    total: int = 0,
+    critical: int = 0,
+    warning: int = 0,
+    notice: int = 0,
+    info: int = 0,
+    unacknowledged: int = 0,
+) -> None:
+    """
+    Render alerts summary metrics.
+
+    Args:
+        total: Total alerts.
+        critical: Critical alerts count.
+        warning: Warning alerts count.
+        notice: Notice alerts count.
+        info: Info alerts count.
+        unacknowledged: Unacknowledged alerts count.
+    """
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+
+    with col1:
+        st.metric("Total", total)
+
+    with col2:
+        st.metric("🚨 Critiques", critical)
+
+    with col3:
+        st.metric("⚠️ Attention", warning)
+
+    with col4:
+        st.metric("📢 Notice", notice)
+
+    with col5:
+        st.metric("ℹ️ Info", info)
+
+    with col6:
+        if unacknowledged > 0:
+            st.metric("⏳ Non acquittées", unacknowledged, delta=unacknowledged, delta_color="inverse")
+        else:
+            st.metric("⏳ Non acquittées", 0)
+
+
+def render_notification_status() -> None:
+    """Render notification channels status."""
+    st.subheader("📤 Canaux de notification")
+
+    from src.utils.config import get_settings, load_alerts_config
+
+    settings = get_settings()
+    alerts_config = load_alerts_config()
+    channels = alerts_config.get("alerting", {}).get("channels", {})
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        telegram_enabled = channels.get("telegram", {}).get("enabled", False)
+        telegram_configured = bool(settings.telegram_bot_token)
+
+        if telegram_enabled and telegram_configured:
+            st.success("📱 Telegram: Actif")
+        elif telegram_configured:
+            st.warning("📱 Telegram: Désactivé")
+        else:
+            st.error("📱 Telegram: Non configuré")
+
+    with col2:
+        email_enabled = channels.get("email", {}).get("enabled", False)
+        email_configured = bool(settings.email_user)
+
+        if email_enabled and email_configured:
+            st.success("📧 Email: Actif")
+        elif email_configured:
+            st.warning("📧 Email: Désactivé")
+        else:
+            st.error("📧 Email: Non configuré")
+
+    with col3:
+        webhook_enabled = channels.get("webhook", {}).get("enabled", False)
+        webhook_configured = bool(settings.webhook_url)
+
+        if webhook_enabled and webhook_configured:
+            st.success("🔗 Webhook: Actif")
+        elif webhook_configured:
+            st.warning("🔗 Webhook: Désactivé")
+        else:
+            st.info("🔗 Webhook: Non configuré")
+
+
+def render_test_notification_form() -> None:
+    """Render a form to send test notifications."""
+    with st.expander("🧪 Envoyer une notification de test"):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            channel = st.selectbox(
+                "Canal",
+                options=["telegram", "email", "webhook"],
+                format_func=lambda x: {
+                    "telegram": "📱 Telegram",
+                    "email": "📧 Email",
+                    "webhook": "🔗 Webhook",
+                }.get(x, x),
+            )
+
+        with col2:
+            severity = st.selectbox(
+                "Sévérité",
+                options=["info", "notice", "warning", "critical"],
+                format_func=lambda x: {
+                    "info": "ℹ️ Info",
+                    "notice": "📢 Notice",
+                    "warning": "⚠️ Warning",
+                    "critical": "🚨 Critical",
+                }.get(x, x),
+            )
+
+        message = st.text_input(
+            "Message",
+            value="Ceci est un test de notification SentinelPi.",
+        )
+
+        if st.button("📤 Envoyer le test"):
+            st.info(f"Envoi d'une notification {severity} via {channel}...")
+            try:
+                import asyncio
+                from src.alerting import get_dispatcher, AlertPayload
+                from src.storage.models import AlertSeverity
+                import uuid
+
+                severity_map = {
+                    "Info": AlertSeverity.INFO,
+                    "Notice": AlertSeverity.NOTICE,
+                    "Warning": AlertSeverity.WARNING,
+                    "Critical": AlertSeverity.CRITICAL,
+                }
+
+                payload = AlertPayload(
+                    alert_id=str(uuid.uuid4()),
+                    severity=severity_map.get(severity, AlertSeverity.INFO),
+                    title="🧪 Test SentinelPi",
+                    summary=message,
+                    source_name="Dashboard Test",
+                )
+
+                dispatcher = get_dispatcher()
+
+                async def send():
+                    await dispatcher.dispatch(payload)
+
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                loop.run_until_complete(send())
+
+                st.success("Notification envoyée !")
+            except Exception as e:
+                st.error(f"Erreur: {e}")

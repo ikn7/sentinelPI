@@ -1,0 +1,261 @@
+2026-02-04 22:31:41.880 WARNING streamlit.runtime.scriptrunner_utils.script_run_context: Thread 'MainThread': missing ScriptRunContext! This warning can be ignored when running in bare mode.
+Reinitialisation de la base...
+2026-02-04 22:31:42,671 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-02-04 22:31:42,672 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("sources")
+2026-02-04 22:31:42,672 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-02-04 22:31:42,674 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("items")
+2026-02-04 22:31:42,674 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-02-04 22:31:42,676 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("filters")
+2026-02-04 22:31:42,676 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-02-04 22:31:42,677 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("alerts")
+2026-02-04 22:31:42,677 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-02-04 22:31:42,679 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("reports")
+2026-02-04 22:31:42,679 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-02-04 22:31:42,681 INFO sqlalchemy.engine.Engine COMMIT
+2026-02-04 22:31:42,684 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-02-04 22:31:42,686 INFO sqlalchemy.engine.Engine DELETE FROM items
+2026-02-04 22:31:42,687 INFO sqlalchemy.engine.Engine [generated in 0.00051s] ()
+2026-02-04 22:31:42,693 INFO sqlalchemy.engine.Engine DELETE FROM alerts
+2026-02-04 22:31:42,694 INFO sqlalchemy.engine.Engine [generated in 0.00040s] ()
+2026-02-04 22:31:42,696 INFO sqlalchemy.engine.Engine DELETE FROM filters
+2026-02-04 22:31:42,696 INFO sqlalchemy.engine.Engine [generated in 0.00039s] ()
+2026-02-04 22:31:42,699 INFO sqlalchemy.engine.Engine DELETE FROM sources
+2026-02-04 22:31:42,699 INFO sqlalchemy.engine.Engine [generated in 0.00039s] ()
+2026-02-04 22:31:42,701 INFO sqlalchemy.engine.Engine COMMIT
+OK - Base videe
+Sync des sources...
+2026-02-04 22:31:42,734 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-02-04 22:31:42,774 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,775 INFO sqlalchemy.engine.Engine [generated in 0.00056s] ('e81a8d514c30577682c687445b3b7685',)
+2026-02-04 22:31:42,779 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,779 INFO sqlalchemy.engine.Engine [cached since 0.005158s ago] ('6a2d7205afc22284f80e43664e226a5b',)
+2026-02-04 22:31:42,782 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,782 INFO sqlalchemy.engine.Engine [cached since 0.008199s ago] ('bd054d5a522af8c761fb5b29fa833ab8',)
+2026-02-04 22:31:42,785 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,785 INFO sqlalchemy.engine.Engine [cached since 0.01102s ago] ('44d00d725bd032316f23046b63b4464c',)
+2026-02-04 22:31:42,788 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,788 INFO sqlalchemy.engine.Engine [cached since 0.01382s ago] ('8dc068702c9c295b31596a894b0a29e5',)
+2026-02-04 22:31:42,790 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,791 INFO sqlalchemy.engine.Engine [cached since 0.01666s ago] ('b1e5d23230cba15e63b30a470b002d8d',)
+2026-02-04 22:31:42,793 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,793 INFO sqlalchemy.engine.Engine [cached since 0.01946s ago] ('bcafd65dab84835882627189175c14f2',)
+2026-02-04 22:31:42,796 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,796 INFO sqlalchemy.engine.Engine [cached since 0.02243s ago] ('e28f0bfb8aeaef23a96fe7abddc58d90',)
+2026-02-04 22:31:42,799 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,799 INFO sqlalchemy.engine.Engine [cached since 0.02532s ago] ('3c5bd711e018c5de09d0352482f14331',)
+2026-02-04 22:31:42,802 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,802 INFO sqlalchemy.engine.Engine [cached since 0.02805s ago] ('6e7cb6ae8f58bbdd391033332c308f61',)
+2026-02-04 22:31:42,805 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:42,805 INFO sqlalchemy.engine.Engine [cached since 0.03086s ago] ('9a4d966793860fc2c7958c7c40e3fbf6',)
+2026-02-04 22:31:42,815 INFO sqlalchemy.engine.Engine INSERT INTO sources (id, name, type, url, config, enabled, interval_minutes, priority, category, tags, last_check, last_success, last_error, consecutive_errors, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTA ... 779 characters truncated ... , ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING created_at, updated_at, id
+2026-02-04 22:31:42,816 INFO sqlalchemy.engine.Engine [generated in 0.00100s (insertmanyvalues) 1/1 (ordered)] ('e81a8d514c30577682c687445b3b7685', 'Le Monde - International', 'RSS', 'https://www.lemonde.fr/international/rss_full.xml', '{}', 1, 30, 1, 'presse', '["actualités", "international", "france"]', None, None, None, 0, '6a2d7205afc22284f80e43664e226a5b', "Le Portail de l'IE", 'RSS', 'https://www.portail-ie.fr/feed/', '{}', 1, 60, 1, 'veille', '["intelligence-economique", "veille", "strategie"]', None, None, None, 0, 'bd054d5a522af8c761fb5b29fa833ab8', 'Le Monde - Économie', 'RSS', 'https://www.lemonde.fr/economie/rss_full.xml', '{}', 0, 30, 2, 'presse', '["économie", "business"]', None, None, None, 0, '44d00d725bd032316f23046b63b4464c', 'Les Echos - Tech', 'RSS', 'https://www.lesechos.fr/tech-medias/rss.xml', '{}', 0, 60, 2 ... 54 parameters truncated ... 120, 2, 'tech', '["tech", "science"]', None, None, None, 0, '3c5bd711e018c5de09d0352482f14331', 'r/france', 'REDDIT', 'https://www.reddit.com/r/france', '{"sort": "hot", "limit": 25}', 0, 120, 2, 'social', '["reddit", "france"]', None, None, None, 0, '6e7cb6ae8f58bbdd391033332c308f61', 'r/technology', 'REDDIT', 'https://www.reddit.com/r/technology', '{"sort": "hot", "limit": 25}', 0, 120, 2, 'social', '["reddit", "tech"]', None, None, None, 0, '9a4d966793860fc2c7958c7c40e3fbf6', 'Mastodon - #AI', 'MASTODON', 'https://mastodon.social', '{"type": "hashtag", "hashtag": "artificialintelligence", "limit": 20}', 0, 60, 2, 'social', '["mastodon", "ia"]', None, None, None, 0)
+2026-02-04 22:31:42,820 INFO sqlalchemy.engine.Engine COMMIT
+OK - 11 sources synchronisees
+Sync des filtres...
+2026-02-04 22:31:42,861 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-02-04 22:31:42,866 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,866 INFO sqlalchemy.engine.Engine [generated in 0.00048s] ('c938a8b6cbdfd536cf708c0c52a4c6e1',)
+2026-02-04 22:31:42,869 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,869 INFO sqlalchemy.engine.Engine [cached since 0.00404s ago] ('d97e3035193802670a31fc9ae8a8b7ec',)
+2026-02-04 22:31:42,872 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,872 INFO sqlalchemy.engine.Engine [cached since 0.006835s ago] ('7652446543f50d929af008ffc1e49e3a',)
+2026-02-04 22:31:42,875 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,875 INFO sqlalchemy.engine.Engine [cached since 0.009646s ago] ('26d03e73cca57a47d943d89cbb04d1cf',)
+2026-02-04 22:31:42,878 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,878 INFO sqlalchemy.engine.Engine [cached since 0.01242s ago] ('d880e217c7a9c61e834fb4ee830abb80',)
+2026-02-04 22:31:42,880 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,881 INFO sqlalchemy.engine.Engine [cached since 0.01522s ago] ('684e98502a15e2aaa1083660cb68a24c',)
+2026-02-04 22:31:42,883 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,883 INFO sqlalchemy.engine.Engine [cached since 0.01802s ago] ('03f714fa8ac5811fbff029dce71f410f',)
+2026-02-04 22:31:42,886 INFO sqlalchemy.engine.Engine SELECT filters.id, filters.name, filters.description, filters.source_ids, filters.categories, filters.conditions, filters.action, filters.action_params, filters.score_modifier, filters.enabled, filters.priority, filters.created_at, filters.updated_at 
+FROM filters 
+WHERE filters.id = ?
+2026-02-04 22:31:42,886 INFO sqlalchemy.engine.Engine [cached since 0.02071s ago] ('0b6e64e4af3dadda415f16095d07e587',)
+2026-02-04 22:31:42,892 INFO sqlalchemy.engine.Engine INSERT INTO filters (id, name, description, source_ids, categories, conditions, action, action_params, score_modifier, enabled, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (?, ?, ? ... 438 characters truncated ... , ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING created_at, updated_at, id
+2026-02-04 22:31:42,892 INFO sqlalchemy.engine.Engine [generated in 0.00067s (insertmanyvalues) 1/1 (ordered)] ('c938a8b6cbdfd536cf708c0c52a4c6e1', 'Alertes critiques', 'Événements nécessitant une attention immédiate', None, None, '{"type": "keywords", "field": "all", "operator": "contains", "case_sensitive": false, "value": ["faillite", "liquidation", "data breach", "fuite de données", "cyberattaque", "ransomware", "hack massif", "rappel produit", "scandale"]}', 'ALERT', '{"severity": "critical"}', 100.0, 1, 1, 'd97e3035193802670a31fc9ae8a8b7ec', 'Mots-clés stratégiques', 'Termes stratégiques à surveiller', None, None, '{"type": "keywords", "field": "all", "operator": "contains", "case_sensitive": false, "value": ["intelligence artificielle", "machine learning", "dee ... (3 characters truncated) ... earning", "LLM", "GPT", "levée de fonds", "série A", "série B", "acquisition", "fusion", "partenariat stratégique", "IPO", "introduction en bourse"]}', 'ALERT', '{"severity": "notice"}', 50.0, 1, 10, '7652446543f50d929af008ffc1e49e3a', 'Contenus tech importants', 'Mettre en avant les articles tech majeurs', None, None, '{"type": "compound", "logic": "or", "conditions": [{"type": "keywords", "field": "title", "operator": "contains", "value": ["breakthrough", "révoluti ... (21 characters truncated) ... ame changer"]}, {"type": "regex", "field": "title", "operator": "matches", "value": "(?i)(première|first|nouveau|new)\\\\s+(mondial|world|record)"}]}', 'HIGHLIGHT', '{}', 30.0, 1, 20, '26d03e73cca57a47d943d89cbb04d1cf', 'Tag réglementation', 'Identifier les contenus réglementaires', None, None, '{"type": "keywords", "field": "all", "operator": "contains", "case_sensitive": false, "value": ["RGPD", "GDPR", "CNIL", "directive européenne", "règlement européen", "mise en conformité", "AI Act", "Digital Services Act", "DMA"]}', 'TAG', '{"tag": "réglementation"}', 0.0, 1, 50, 'd880e217c7a9c61e834fb4ee830abb80', 'Tag financement', 'Identifier les actualités financement', None, None, '{"type": "keywords", "field": "all", "operator": "contains", "case_sensitive": false, "value": ["levée de fonds", "fundraising", "série A", "série B", "série C", "seed", "amorçage", "investissement", "million", "milliard", "€M", "$M"]}', 'TAG', '{"tag": "financement"}', 0.0, 1, 50, '684e98502a15e2aaa1083660cb68a24c', 'Tag sécurité', 'Identifier les articles cybersécurité', None, None, '{"type": "keywords", "field": "all", "operator": "contains", "case_sensitive": false, "value": ["cybersécurité", "ransomware", "malware", "vulnérabilité", "CVE", "zero-day", "phishing", "ANSSI"]}', 'TAG', '{"tag": "sécurité"}', 0.0, 1, 50, '03f714fa8ac5811fbff029dce71f410f', 'Exclusion publicités', 'Filtrer le contenu sponsorisé', None, None, '{"type": "compound", "logic": "or", "conditions": [{"type": "keywords", "field": "title", "operator": "contains", "case_sensitive": false, "value": [ ... (32 characters truncated) ... "publicité", "partenaire"]}, {"type": "regex", "field": "title", "operator": "matches", "value": "^\\\\s*\\\\[?(Sponsored|Pub|Ad|Publicité)\\\\]?"}]}', 'EXCLUDE', '{}', 0.0, 1, 1, '0b6e64e4af3dadda415f16095d07e587', 'Exclusion newsletters', 'Filtrer les annonces de newsletters', None, None, '{"type": "keywords", "field": "title", "operator": "contains", "case_sensitive": false, "value": ["subscribe to our newsletter", "inscrivez-vous à notre newsletter", "sign up for", "weekly digest"]}', 'EXCLUDE', '{}', 0.0, 1, 2)
+2026-02-04 22:31:42,896 INFO sqlalchemy.engine.Engine COMMIT
+OK - 8 filtres synchronises
+Lancement de la collecte...
+2026-02-04 22:31:43,401 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-02-04 22:31:43,404 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.enabled = 1
+2026-02-04 22:31:43,405 INFO sqlalchemy.engine.Engine [generated in 0.00049s] ()
+2026-02-04 22:31:43,407 INFO sqlalchemy.engine.Engine COMMIT
+2026-02-04 22:31:43,732 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-02-04 22:31:43,734 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,734 INFO sqlalchemy.engine.Engine [generated in 0.00056s] ('https://www.lemonde.fr/international/live/2026/02/04/en-direct-guerre-en-ukraine-l-interet-de-poutine-c-est-d-humilier-l-europe-affirme-volodymyr-zelensky-invite-du-20-heures-de-france-2_6664947_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,741 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,741 INFO sqlalchemy.engine.Engine [cached since 0.007403s ago] ('https://www.lemonde.fr/economie/article/2026/02/04/le-parlement-europeen-reprend-l-examen-de-l-accord-commercial-entre-l-union-et-les-etats-unis_6665429_3234.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,746 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,746 INFO sqlalchemy.engine.Engine [cached since 0.01231s ago] ('https://www.lemonde.fr/idees/article/2026/02/04/les-etats-unis-parient-sur-une-coordination-active-entre-les-pays-et-les-industries-pour-securiser-toute-la-chaine-de-l-ia_6665426_3232.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,751 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,751 INFO sqlalchemy.engine.Engine [cached since 0.01734s ago] ('https://www.lemonde.fr/international/article/2026/02/04/les-europeens-ont-fixe-les-regles-du-pret-de-90-milliards-d-euros-a-l-ukraine_6665425_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,756 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,756 INFO sqlalchemy.engine.Engine [cached since 0.0224s ago] ('https://www.lemonde.fr/culture/article/2026/02/04/le-documentaire-americain-melania-nouvel-outil-de-propagande-pour-le-clan-trump_6665424_3246.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,761 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,761 INFO sqlalchemy.engine.Engine [cached since 0.02723s ago] ('https://www.lemonde.fr/international/article/2026/02/04/a-rome-le-visage-representant-giorgia-meloni-sur-une-fresque-religieuse-retire_6665423_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,766 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,766 INFO sqlalchemy.engine.Engine [cached since 0.03231s ago] ('https://www.lemonde.fr/societe/article/2026/02/04/la-correspondance-du-predateur-sexuel-jeffrey-epstein-eclabousse-des-personnalites-francaises_6665420_3224.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,771 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,771 INFO sqlalchemy.engine.Engine [cached since 0.03713s ago] ('https://www.lemonde.fr/sport/article/2026/02/04/jo-2026-milan-est-une-fete-mais-il-y-a-de-moins-en-moins-d-invites_6665416_3242.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,776 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,776 INFO sqlalchemy.engine.Engine [cached since 0.04196s ago] ('https://www.lemonde.fr/m-le-mag/article/2026/02/04/lolita-cercel-la-chanteuse-creee-par-ia-en-roumanie-fascine-et-inquiete_6665414_4500055.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,780 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,781 INFO sqlalchemy.engine.Engine [cached since 0.04677s ago] ('https://www.lemonde.fr/livres/article/2026/02/04/l-europe-un-etat-qui-s-ignore-de-sylvain-kahn-l-union-europeenne-creatrice-d-une-souverainete-inedite_6665412_3260.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,787 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,787 INFO sqlalchemy.engine.Engine [cached since 0.0533s ago] ('https://www.lemonde.fr/international/article/2026/02/04/en-grece-l-action-des-gardes-cotes-en-question-apres-le-naufrage-d-un-bateau-de-migrants_6665411_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,792 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,792 INFO sqlalchemy.engine.Engine [cached since 0.05822s ago] ('https://www.lemonde.fr/international/video/2026/02/04/minneapolis-l-emissaire-de-donald-trump-annonce-le-retrait-immediat-de-700-agents-de-l-immigration_6665408_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,797 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,797 INFO sqlalchemy.engine.Engine [cached since 0.06345s ago] ('https://www.lemonde.fr/international/article/2026/02/04/le-washington-post-lance-un-vaste-plan-de-licenciements-le-reseau-des-correspondants-a-l-etranger-particulierement-touche_6665407_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,802 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,803 INFO sqlalchemy.engine.Engine [cached since 0.06882s ago] ('https://www.lemonde.fr/economie/article/2026/02/04/la-crise-immobiliere-en-chine-ebranle-la-foi-en-l-avenir_6665403_3234.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,807 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,808 INFO sqlalchemy.engine.Engine [cached since 0.07374s ago] ('https://www.lemonde.fr/idees/article/2026/02/04/en-afrique-le-crepuscule-de-la-democratie-se-fait-dans-l-indifference-du-monde_6665402_3232.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,812 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,812 INFO sqlalchemy.engine.Engine [cached since 0.07852s ago] ('https://www.lemonde.fr/international/article/2026/02/04/tom-homan-l-emissaire-de-donald-trump-a-minneapolis-annonce-le-retrait-immediat-de-700-policiers-de-l-immigration_6665398_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,817 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,817 INFO sqlalchemy.engine.Engine [cached since 0.08345s ago] ('https://www.lemonde.fr/afrique/article/2026/02/04/au-nigeria-au-moins-162-personnes-tuees-par-des-hommes-armes-dans-le-centre-ouest_6665394_3212.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,822 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,822 INFO sqlalchemy.engine.Engine [cached since 0.08822s ago] ('https://www.lemonde.fr/international/article/2026/02/04/les-discussions-entre-l-iran-et-les-etats-unis-se-tiendront-vendredi-a-oman-selon-des-medias-iraniens_6665393_3210.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,827 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,827 INFO sqlalchemy.engine.Engine [cached since 0.0931s ago] ('https://www.lemonde.fr/societe/article/2026/02/04/entre-jeffrey-epstein-et-la-banquiere-ariane-de-rothschild-une-vraie-proximite-d-affaires_6665387_3224.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,832 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:43,832 INFO sqlalchemy.engine.Engine [cached since 0.09798s ago] ('https://www.lemonde.fr/afrique/article/2026/02/04/mort-de-saif-al-islam-kadhafi-une-enquete-pour-assassinat-ouverte_6665382_3212.html', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,836 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:43,837 INFO sqlalchemy.engine.Engine [cached since 1.063s ago] ('e81a8d514c30577682c687445b3b7685',)
+2026-02-04 22:31:43,843 INFO sqlalchemy.engine.Engine UPDATE sources SET last_check=?, last_success=?, updated_at=CURRENT_TIMESTAMP WHERE sources.id = ?
+2026-02-04 22:31:43,843 INFO sqlalchemy.engine.Engine [generated in 0.00051s] ('2026-02-04 21:31:43.838557', '2026-02-04 21:31:43.838613', 'e81a8d514c30577682c687445b3b7685')
+2026-02-04 22:31:43,853 INFO sqlalchemy.engine.Engine INSERT INTO items (id, source_id, guid, content_hash, title, url, author, content, summary, image_url, media_urls, published_at, collected_at, language, keywords, entities, sentiment, sentiment_score, relevance_score, matched_filters, status, starred ... 1474 characters truncated ... ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+2026-02-04 22:31:43,853 INFO sqlalchemy.engine.Engine [generated in 0.00223s (insertmanyvalues) 1/1 (unordered)] ('9b6f9e42-2471-4235-b425-963735dd7152', 'e81a8d514c30577682c687445b3b7685', 'https://www.lemonde.fr/international/live/2026/02/04/en-direct-guerre-en-ukraine-l-interet-de-poutine-c-est-d-humilier-l-europe-affirme-volodymyr-zelensky-invite-du-20-heures-de-france-2_6664947_3210.html', '6e93fbb0893cbe4b8b7d4f32fe0b897cc8cbae631bc8e8ce5c4d285f6ff97210', 'EN DIRECT, guerre en Ukraine\xa0: «\xa0L’intérêt de Poutine est d’humilier l’Europe\xa0», affirme Volodymyr Zelensky, invité du «\xa020\xa0heures\xa0» de France 2', 'https://www.lemonde.fr/international/live/2026/02/04/en-direct-guerre-en-ukraine-l-interet-de-poutine-c-est-d-humilier-l-europe-affirme-volodymyr-zelensky-invite-du-20-heures-de-france-2_6664947_3210.html', None, 'Le président ukrainien Volodymyr Zelensky, à Kiev, le 3\xa0février 2026.', 'Selon le président ukrainien, son homologue russe «\xa0n’a pas peur des Européens\xa0; il n’a peur que de Trump\xa0». «\xa0Ce que Trump doit dire à P ... (74 characters truncated) ...  a aussi annoncé qu’environ 55\xa0000\xa0soldats ukrainiens avaient été tués sur le champ de bataille depuis le début de l’invasion à grande échelle.', None, None, '2026-02-04 20:57:34.000000', '2026-02-04 21:31:43.726939', 'fr', '["zelensky", "poutine", "volodymyr", "président", "ukrainien", "peur", "trump", "direct", "guerre", "ukraine"]', None, 'negative', -1.0, 50.0, None, 'NEW', 0, None, None, None, 'ea35ee07-c5ad-4c4a-929a-bc1ecf64b448', 'e81a8d514c30577682c687445b3b7685', 'https://www.lemonde.fr/economie/article/2026/02/04/le-parlement-europeen-reprend-l-examen-de-l-accord-commercial-entre-l-union-et-les-etats-unis_6665429_3234.html', 'b4a2d8a0ff0d9fabed56f070607aa4daa38720b3a10c6ffd20f400bab6445cd6', 'Le Parlement\xa0européen\xa0reprend l’examen de l’accord commercial entre l’Union et les Etats-Unis', 'https://www.lemonde.fr/economie/article/2026/02/04/le-parlement-europeen-reprend-l-examen-de-l-accord-commercial-entre-l-union-et-les-etats-unis_6665429_3234.html', None, 'Les députés du Parlement européen,\xa0à Strasbourg, le 21\xa0janvier 2026.', 'Après le recul de Donald Trump sur le Groenland, les eurodéputés s’attellent à la ratification du texte. Mais ils sont loin d’être d’accord sur l’issue des négociations qui peuvent désormais s’engager.', None, None, '2026-02-04 20:16:08.000000', '2026-02-04 21:31:43.727250', 'fr', '["parlement", "européen", "accord", "reprend", "examen", "commercial", "union", "etats", "unis", "députés"]', None, 'neutral', 0.0, 50.0, None, 'NEW', 0, None, None, None ... 400 parameters truncated ... '12eb7a3f-677f-4abb-98e2-8921b74b2163', 'e81a8d514c30577682c687445b3b7685', 'https://www.lemonde.fr/societe/article/2026/02/04/entre-jeffrey-epstein-et-la-banquiere-ariane-de-rothschild-une-vraie-proximite-d-affaires_6665387_3224.html', 'dbd93e4d781d24284fb1661a8c0a1e8c136b95e23ded49088d6a04ff05e36b73', 'Entre Jeffrey Epstein et la banquière Ariane de\xa0Rothschild, une vraie proximité d’affaires', 'https://www.lemonde.fr/societe/article/2026/02/04/entre-jeffrey-epstein-et-la-banquiere-ariane-de-rothschild-une-vraie-proximite-d-affaires_6665387_3224.html', None, 'Ariane de\xa0Rothschild, patronne du groupe Edmond de\xa0Rothschild, lors d’une conférence de presse, à Paris, le 3\xa0décembre\xa02025.', 'La dernière livraison des «\xa0Epstein Files\xa0» par le ministère américain de la justice confirme la très grande proximité entre la patronne franco ... (39 characters truncated) ... child et le criminel sexuel. De 2013 jusqu’à la mort de ce dernier, en\xa02019, il agissait en conseiller officieux de la banque implantée en Suisse.', None, None, '2026-02-04 16:00:00.000000', '2026-02-04 21:31:43.730230', 'fr', '["rothschild", "epstein", "ariane", "proximité", "patronne", "groupe", "edmond", "jeffrey", "banquière", "vraie"]', None, 'neutral', 0.0, 50.0, None, 'NEW', 0, None, None, None, '644d0fcf-b4a6-451d-9e61-c3d1b8f228c2', 'e81a8d514c30577682c687445b3b7685', 'https://www.lemonde.fr/afrique/article/2026/02/04/mort-de-saif-al-islam-kadhafi-une-enquete-pour-assassinat-ouverte_6665382_3212.html', 'f68122fee8c4fd2b9bcbbc4dc37d4b06197086ffab2df6c0f6f055c2aa8f683a', 'Mort de Saïf Al-Islam Kadhafi, fils de l’ancien dictateur libyen\xa0: une enquête pour assassinat ouverte', 'https://www.lemonde.fr/afrique/article/2026/02/04/mort-de-saif-al-islam-kadhafi-une-enquete-pour-assassinat-ouverte_6665382_3212.html', None, 'Saif Al-Islam Kadhafi, dans une salle d’audience d’un tribunal de Zinten (Libye), le 25\xa0mai\xa02014.', 'Le bureau du procureur a indiqué qu’une équipe accompagnée de médecins légistes et d’experts s’était rendue mardi à Zinten, dans l’ouest du pays, pour examiner la dépouille de celui qui a longtemps été considéré comme le successeur potentiel de son père, Mouammar Kadhafi.', None, None, '2026-02-04 15:21:47.000000', '2026-02-04 21:31:43.730427', 'fr', '["kadhafi", "islam", "zinten", "mort", "saïf", "fils", "ancien", "dictateur", "libyen", "enquête"]', None, 'neutral', 0.0, 50.0, None, 'NEW', 0, None, None, None)
+2026-02-04 22:31:43,858 INFO sqlalchemy.engine.Engine COMMIT
+2026-02-04 22:31:44,264 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-02-04 22:31:44,265 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,265 INFO sqlalchemy.engine.Engine [cached since 0.531s ago] ('https://www.portail-ie.fr/?p=19216', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,300 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,300 INFO sqlalchemy.engine.Engine [cached since 0.5666s ago] ('https://www.portail-ie.fr/?p=19116', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,366 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,366 INFO sqlalchemy.engine.Engine [cached since 0.6324s ago] ('https://www.portail-ie.fr/?p=19143', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,455 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,455 INFO sqlalchemy.engine.Engine [cached since 0.7212s ago] ('https://www.portail-ie.fr/?p=19114', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,482 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,483 INFO sqlalchemy.engine.Engine [cached since 0.7488s ago] ('https://www.portail-ie.fr/?p=19090', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,550 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,550 INFO sqlalchemy.engine.Engine [cached since 0.8162s ago] ('https://www.portail-ie.fr/?p=19080', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,595 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,595 INFO sqlalchemy.engine.Engine [cached since 0.8616s ago] ('https://www.portail-ie.fr/?p=19076', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,623 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,623 INFO sqlalchemy.engine.Engine [cached since 0.8892s ago] ('https://www.portail-ie.fr/?p=19057', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,648 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,649 INFO sqlalchemy.engine.Engine [cached since 0.9148s ago] ('https://www.portail-ie.fr/?p=18684', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,728 INFO sqlalchemy.engine.Engine SELECT items.id 
+FROM items 
+WHERE items.guid = ? AND items.source_id = ?
+2026-02-04 22:31:44,728 INFO sqlalchemy.engine.Engine [cached since 0.9939s ago] ('https://www.portail-ie.fr/?p=19056', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,913 INFO sqlalchemy.engine.Engine SELECT sources.id, sources.name, sources.type, sources.url, sources.config, sources.enabled, sources.interval_minutes, sources.priority, sources.category, sources.tags, sources.last_check, sources.last_success, sources.last_error, sources.consecutive_errors, sources.created_at, sources.updated_at 
+FROM sources 
+WHERE sources.id = ?
+2026-02-04 22:31:44,913 INFO sqlalchemy.engine.Engine [cached since 2.14s ago] ('6a2d7205afc22284f80e43664e226a5b',)
+2026-02-04 22:31:44,917 INFO sqlalchemy.engine.Engine UPDATE sources SET last_check=?, last_success=?, updated_at=CURRENT_TIMESTAMP WHERE sources.id = ?
+2026-02-04 22:31:44,917 INFO sqlalchemy.engine.Engine [cached since 1.075s ago] ('2026-02-04 21:31:44.915771', '2026-02-04 21:31:44.915815', '6a2d7205afc22284f80e43664e226a5b')
+2026-02-04 22:31:44,921 INFO sqlalchemy.engine.Engine INSERT INTO items (id, source_id, guid, content_hash, title, url, author, content, summary, image_url, media_urls, published_at, collected_at, language, keywords, entities, sentiment, sentiment_score, relevance_score, matched_filters, status, starred ... 704 characters truncated ... ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+2026-02-04 22:31:44,921 INFO sqlalchemy.engine.Engine [cached since 1.07s ago (insertmanyvalues) 1/1 (unordered)] ('d8f73abb-8f72-490d-b8c4-8beec947d016', '6a2d7205afc22284f80e43664e226a5b', 'https://www.portail-ie.fr/?p=19216', '29d91686bca40935681023d23bd6c56eafc908cce36eaa927d6bcc4833ffc118', 'Les nouvelles liaisons pétrolières Washington – Caracas', 'https://www.portail-ie.fr/univers/analyse-strategique-les-methodes-et-outils/2026/liaisons-petrolieres-washington-caracas-venezuela/', 'portail-ie', '<div class="elementor elementor-19216">\n\t\t\t\t<div class="elementor-element elementor-element-3b874e9e e-flex e-con-boxed e-con e-parent">\n\t\t\t ... (8794 characters truncated) ... elles liaisons pétrolières Washington &#8211; Caracas</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', '<p>L’intervention américaine au Venezuela s’inscrit moins dans une logique de sécurisation immédiate de volumes que dans une recomposition durable de ... (254 characters truncated) ... elles liaisons pétrolières Washington &#8211; Caracas</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', None, None, '2026-02-04 15:57:07.000000', '2026-02-04 21:31:44.260499', 'fr', '["pétrolières", "liaisons", "washington", "caracas", "pétrole", "venezuela", "nouvelles", "volumes", "contrôle", "flux"]', None, 'negative', -1.0, 50.0, None, 'NEW', 0, None, None, None, '4bd1fc44-329c-4a88-afb8-afe6edd9bf2a', '6a2d7205afc22284f80e43664e226a5b', 'https://www.portail-ie.fr/?p=19116', '77426569cf0b9f9be5525207f2da24c98d96b8c94d714ae3e8e471a6d2954ddf', 'Cartographie de la Turquie d’Erdoğan', 'https://www.portail-ie.fr/univers/2026/cartographie-de-la-turquie-derdogan/', 'portail-ie', '<p style="text-align: justify;"><b>Cette recherche en sources ouvertes (OSINT) identifie et cartographie les réseaux d&rsquo;influence dans la Turqui ... (15704 characters truncated) ... rquie-derdogan/">Cartographie de la Turquie d’Erdoğan</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', '<p>Cette recherche en sources ouvertes (OSINT) identifie et cartographie les réseaux d\'influence turque en Europe occidentale, opérant à l\'intersec ... (152 characters truncated) ... rquie-derdogan/">Cartographie de la Turquie d’Erdoğan</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', None, None, '2026-02-04 09:53:30.000000', '2026-02-04 21:31:44.260807', 'fr', '["turquie", "influence", "cartographie", "europe", "religieux", "politique", "akp", "erdogan", "ont", "occidentale"]', None, 'positive', 1.0, 50.0, None, 'NEW', 0, None, None, None ... 150 parameters truncated ... '8f577ff5-04ee-4a8c-896a-97a8e0fdf0bc', '6a2d7205afc22284f80e43664e226a5b', 'https://www.portail-ie.fr/?p=18684', '58034fe8dc7d5a2fd11ca2f75060365796b21080089fd650294242628ae9874c', 'Sous l’euphorie NVIDIA, les lignes de faille d’un monde porté par l’IA apparaissent [2/2]', 'https://www.portail-ie.fr/univers/blockchain-data-et-ia/2026/sous-leuphorie-nvidia-les-lignes-de-faille-dun-monde-porte-par-lia-apparaissent-2/', 'portail-ie', '<p style="text-align: justify;"><b>Pendant que NVIDIA brille, l’IA avance sur un fil : énergie, Chine, Taïwan, </b><b><i>OpenAI</i></b><b>, survalori ... (17678 characters truncated) ... e faille d’un monde porté par l’IA apparaissent [2/2]</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', '<p>Pendant que NVIDIA brille, l’IA avance sur un fil : énergie, Chine, Taïwan, OpenAI, survalorisations…\xa0 Autant d’éléments qui pourraient pousser ... (276 characters truncated) ... e faille d’un monde porté par l’IA apparaissent [2/2]</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', None, None, '2026-01-27 15:34:35.000000', '2026-02-04 21:31:44.262234', 'fr', '["nvidia", "croissance", "openai", "secteur", "bulle", "marché", "partie", "déjà", "valorisation", "pourraient"]', None, 'positive', 0.17, 50.0, None, 'NEW', 0, None, None, None, '65ce3d2e-cb51-4dbb-a82a-39721d2649ff', '6a2d7205afc22284f80e43664e226a5b', 'https://www.portail-ie.fr/?p=19056', '96644d4370596bb2618d57b2ed15a632698d712bdd4386eaa8d8f1fde61eec1a', 'Quantique : Quobly, la pépite grenobloise qui attise l’appétit du suisse SEALSQ', 'https://www.portail-ie.fr/univers/blockchain-data-et-ia/2026/quantique-quobly-la-pepite-grenobloise-qui-attise-lappetit-du-suisse-sealsq/', 'portail-ie', '<p><strong>L’informatique quantique représente une rupture technologique profonde, promettant des capacités de calcul infiniment supérieures à celles ... (5189 characters truncated) ... ite grenobloise qui attise l’appétit du suisse SEALSQ</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', '<p>L’informatique quantique représente une rupture technologique profonde, promettant des capacités de calcul infiniment supérieures à celles des arc ... (310 characters truncated) ... ite grenobloise qui attise l’appétit du suisse SEALSQ</a> est apparu en premier sur <a href="https://www.portail-ie.fr">Portail de l&#039;IE</a>.</p>', None, None, '2026-01-27 13:46:34.000000', '2026-02-04 21:31:44.262414', 'fr', '["quantique", "quobly", "sealsq", "grenobloise", "suisse", "technologique", "portail", "calcul", "france", "pépite"]', None, 'neutral', 0.0, 50.0, None, 'NEW', 0, None, None, None)
+2026-02-04 22:31:44,926 INFO sqlalchemy.engine.Engine COMMIT
+Resultat: {'success': True, 'message': '30 items collectes depuis 2 source(s)', 'items': 30, 'errors': []}

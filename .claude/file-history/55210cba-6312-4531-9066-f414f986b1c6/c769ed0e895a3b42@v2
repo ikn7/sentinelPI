@@ -1,0 +1,145 @@
+# Configuration des règles d'alertes
+# Définissez les seuils et conditions pour déclencher des alertes
+
+# Types d'alertes disponibles
+alert_types:
+  # Alertes concurrentielles
+  concurrent:
+    - type: "NOUVEAU_CONCURRENT"
+      description: "Nouveau concurrent détecté"
+      severite: "info"
+
+    - type: "RECRUTEMENT_MASSIF"
+      description: "Vague de recrutement importante"
+      severite: "attention"
+      seuil: 5
+      periode_jours: 30
+
+    - type: "POSTE_STRATEGIQUE"
+      description: "Recrutement sur poste stratégique"
+      severite: "attention"
+      mots_cles:
+        - "CTO"
+        - "CEO"
+        - "CFO"
+        - "Directeur"
+        - "VP"
+        - "Chief"
+        - "Head of"
+
+    - type: "LEVEE_FONDS"
+      description: "Levée de fonds annoncée"
+      severite: "important"
+
+    - type: "NOUVEAU_DIRIGEANT"
+      description: "Nomination d'un nouveau dirigeant"
+      severite: "attention"
+
+    - type: "DEPART_DIRIGEANT"
+      description: "Départ d'un dirigeant"
+      severite: "attention"
+
+    - type: "PROCEDURE_COLLECTIVE"
+      description: "Ouverture de procédure collective"
+      severite: "critique"
+
+    - type: "DEPOT_BREVET"
+      description: "Dépôt d'un nouveau brevet"
+      severite: "attention"
+
+    - type: "DEPOT_MARQUE"
+      description: "Dépôt d'une nouvelle marque"
+      severite: "info"
+
+    - type: "MENTION_PRESSE_NEGATIVE"
+      description: "Mention presse à sentiment négatif"
+      severite: "attention"
+      seuil_sentiment: -0.3
+
+    - type: "EXPANSION"
+      description: "Expansion géographique ou nouveau marché"
+      severite: "attention"
+
+  # Alertes réglementaires
+  reglementaire:
+    - type: "NOUVELLE_LOI"
+      description: "Publication d'une nouvelle loi"
+      severite: "attention"
+
+    - type: "NOUVEAU_DECRET"
+      description: "Publication d'un nouveau décret"
+      severite: "attention"
+
+    - type: "NOUVELLE_NORME"
+      description: "Publication d'une nouvelle norme"
+      severite: "info"
+
+    - type: "ECHEANCE_PROCHE"
+      description: "Échéance réglementaire approchant"
+      severite: "important"
+      jours_avant: 30
+
+    - type: "ECHEANCE_IMMINENTE"
+      description: "Échéance réglementaire imminente"
+      severite: "critique"
+      jours_avant: 7
+
+    - type: "MODIFICATION_TEXTE"
+      description: "Modification d'un texte existant"
+      severite: "attention"
+
+    - type: "SANCTION_SECTEUR"
+      description: "Sanction prononcée dans le secteur"
+      severite: "important"
+
+  # Alertes croisées
+  croisee:
+    - type: "IMPACT_CONCURRENT_REGLEMENTATION"
+      description: "Nouvelle réglementation impactant un concurrent"
+      severite: "important"
+
+    - type: "OPPORTUNITE_REGLEMENTAIRE"
+      description: "Opportunité liée à un changement réglementaire"
+      severite: "attention"
+
+    - type: "RISQUE_SECTORIEL"
+      description: "Risque identifié pour le secteur"
+      severite: "important"
+
+# Règles de notification
+notification_rules:
+  # Agrégation des alertes
+  aggregation:
+    enabled: true
+    window_minutes: 15
+    max_alerts_per_window: 10
+
+  # Heures de silence (pas de notification)
+  quiet_hours:
+    enabled: false
+    start: "22:00"
+    end: "07:00"
+
+  # Jours sans notification
+  quiet_days: []  # ex: ["saturday", "sunday"]
+
+  # Escalade si non lu
+  escalation:
+    enabled: false
+    delay_hours: 24
+    escalate_to: "email"
+
+# Filtres personnalisés
+custom_filters:
+  # Ignorer certains types pour certains concurrents
+  ignore:
+    []
+    # - competitor_siren: "123456789"
+    #   alert_types: ["DEPOT_MARQUE"]
+
+  # Forcer la sévérité pour certains concurrents
+  override_severity:
+    []
+    # - competitor_siren: "123456789"
+    #   alert_type: "LEVEE_FONDS"
+    #   new_severity: "critique"

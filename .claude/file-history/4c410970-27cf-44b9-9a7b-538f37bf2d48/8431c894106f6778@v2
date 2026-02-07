@@ -1,0 +1,80 @@
+app:
+  name: Intelligence Portal
+  icon: 🔥
+  version: 1.0.1
+  timezone: Europe/Paris
+database:
+  path: data/sentinelpi.db
+  echo: true
+http:
+  timeout: 30
+  max_retries: 3
+  retry_delay: 5
+  rate_limit: 2.0
+  cache:
+    enabled: true
+    directory: data/cache
+    ttl_seconds: 300
+  impersonate: chrome
+  impersonate_version: chrome120
+  user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+    like Gecko) Chrome/143.0.0.0 Safari/537.36
+  accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8
+  accept_language: fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7
+  accept_encoding: gzip, deflate, br
+  cache_control: no-cache
+  sec_ch_ua: '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'
+  sec_ch_ua_mobile: ?0
+  sec_ch_ua_platform: '"Windows"'
+  sec_fetch_dest: document
+  sec_fetch_mode: navigate
+  sec_fetch_site: none
+  sec_fetch_user: ?1
+  upgrade_insecure_requests: '1'
+  dnt: '1'
+  custom_headers: {}
+collection:
+  default_interval_minutes: 60
+  max_concurrent_collectors: 3
+  max_items_per_source: 100
+  dedup_window_days: 30
+  collector_timeout: 120
+processing:
+  extract_keywords: true
+  max_keywords: 10
+  detect_language: true
+  analyze_sentiment: true
+  summarize: true
+  summarize_max_length: 200
+scheduler:
+  enabled: true
+  check_interval_seconds: 60
+  daily_report_time: 08:00
+  weekly_report_day: 0
+  weekly_report_time: 09:00
+dashboard:
+  enabled: true
+  host: 0.0.0.0
+  port: 8501
+  items_per_page: 50
+  auto_refresh_seconds: 60
+  password_hash: 741c3d1ef506680aac99c47f87364afe72d25c260eb6da55859adffc6aba6373
+logging:
+  level: INFO
+  file: logs/sentinelpi.log
+  rotation: 10 MB
+  retention: 30 days
+  format: '{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {name}:{function}:{line} | {message}'
+  colorize: true
+learning:
+  enabled: true
+  learning_rate: 0.1
+  decay_half_life_days: 30
+  min_actions_required: 20
+  max_preference_score: 25.0
+
+maintenance:
+  cleanup_enabled: true
+  retention_days: 90
+  cleanup_time: 03:00
+  vacuum_enabled: true

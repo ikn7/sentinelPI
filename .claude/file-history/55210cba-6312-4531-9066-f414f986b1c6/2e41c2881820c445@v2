@@ -1,0 +1,187 @@
+"""Tests pour le collecteur BODACC."""
+
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+
+# Données de test simulant une entrée RSS BODACC
+MOCK_RSS_ENTRY = {
+    "id": "BODACC-A-2024-001234",
+    "title": "Modification - TEST COMPANY SAS",
+    "summary": "Modification du capital social. SIREN: 123456789. Augmentation de capital de 10000 à 50000 euros.",
+    "published": "2024-01-15T10:00:00+01:00",
+    "link": "https://bodacc.fr/annonce/2024-001234",
+    "author": "Tribunal de Commerce de Paris",
+}
+
+MOCK_RSS_PROCEDURE_COLLECTIVE = {
+    "id": "BODACC-A-2024-005678",
+    "title": "Jugement - ENTREPRISE EN DIFFICULTE SARL",
+    "summary": "Ouverture d'une procédure de redressement judiciaire. SIREN: 987654321.",
+    "published": "2024-01-20T14:00:00+01:00",
+    "link": "https://bodacc.fr/annonce/2024-005678",
+    "author": "Tribunal de Commerce de Lyon",
+}
+
+MOCK_API_RESPONSE = {
+    "records": [
+        {
+            "id": "rec123",
+            "fields": {
+                "id": "BODACC-2024-001",
+                "typeavis": "Modification",
+                "dateparution": "2024-01-15",
+                "denomination": "Test Company",
+                "contenu": "Changement de siège social",
+                "tribunal": "TC Paris",
+                "url": "https://bodacc.fr/001",
+            }
+        }
+    ]
+}
+
+
+class TestBodaccCollector:
+    """Tests pour BodaccCollector."""
+
+    @pytest.fixture
+    def mock_settings(self):
+        """Mock des settings."""
+        mock_settings = MagicMock()
+        mock_settings.collection.rate_limits.default = 10
+        mock_settings.collection.retry.max_attempts = 3
+        mock_settings.collection.retry.base_delay = 1
+        mock_settings.collection.retry.max_delay = 10
+        mock_settings.app.version = "1.0.0"
+
+        with patch("src.collectors.bodacc.get_settings", return_value=mock_settings):
+            with patch("src.utils.http.get_settings", return_value=mock_settings):
+                yield mock_settings
+
+    @pytest.fixture
+    def collector(self, mock_settings):
+        """Crée une instance du collecteur."""
+        from src.collectors.bodacc import BodaccCollector
+        return BodaccCollector()
+
+    def test_extract_siren(self, collector):
+        """Test de l'extraction de SIREN."""
+        text = "Modification pour l'entreprise SIREN: 123456789"
+        siren = collector._extract_siren(text)
+        assert siren == "123456789"
+
+    def test_extract_siren_no_match(self, collector):
+        """Test de l'extraction de SIREN sans correspondance."""
+        text = "Texte sans numéro SIREN valide"
+        siren = collector._extract_siren(text)
+        assert siren is None
+
+    def test_categorize_announcement_modification(self, collector):
+        """Test de la catégorisation - modification."""
+        category = collector._categorize_announcement("Modification", "Changement de capital")
+        assert category == "modification"
+
+    def test_categorize_announcement_procedure(self, collector):
+        """Test de la catégorisation - procédure collective."""
+        category = collector._categorize_announcement(
+            "Jugement",
+            "Ouverture redressement judiciaire"
+        )
+        assert category == "procedure_collective"
+
+    def test_categorize_announcement_radiation(self, collector):
+        """Test de la catégorisation - radiation."""
+        category = collector._categorize_announcement("Radiation", "Dissolution de la société")
+        assert category == "radiation"
+
+    def test_categorize_announcement_creation(self, collector):
+        """Test de la catégorisation - création."""
+        category = collector._categorize_announcement("Immatriculation", "Nouvelle entreprise")
+        assert category == "creation"
+
+    def test_parse_date_iso(self, collector):
+        """Test du parsing de date ISO."""
+        result = collector._parse_date("2024-01-15")
+        assert result == date(2024, 1, 15)
+
+    def test_parse_date_french(self, collector):
+        """Test du parsing de date française."""
+        result = collector._parse_date("15/01/2024")
+        assert result == date(2024, 1, 15)
+
+    def test_parse_date_invalid(self, collector):
+        """Test du parsing de date invalide."""
+        result = collector._parse_date("invalid")
+        assert result is None
+
+    def test_parse_rss_entry(self, collector):
+        """Test du parsing d'une entrée RSS."""
+        entry = collector._parse_rss_entry(MOCK_RSS_ENTRY)
+
+        assert entry is not None
+        assert entry.numero_annonce == "BODACC-A-2024-001234"
+        assert entry.siren == "123456789"
+        assert entry.categorie == "modification"
+        assert entry.tribunal == "Tribunal de Commerce de Paris"
+
+    def test_parse_rss_entry_procedure_collective(self, collector):
+        """Test du parsing d'une procédure collective."""
+        entry = collector._parse_rss_entry(MOCK_RSS_PROCEDURE_COLLECTIVE)
+
+        assert entry is not None
+        assert entry.siren == "987654321"
+        assert entry.categorie == "procedure_collective"
+
+    @pytest.mark.asyncio
+    async def test_search_by_siren(self, collector, mock_settings):
+        """Test de la recherche par SIREN."""
+        with patch.object(collector.client, "get_json", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MOCK_API_RESPONSE
+
+            entries = await collector._search_by_siren("123456789")
+
+            assert len(entries) == 1
+            assert entries[0].type_annonce == "Modification"
+            mock_get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_collect_for_competitor(self, collector, mock_settings):
+        """Test de la collecte pour un concurrent."""
+        with patch.object(collector, "_search_by_siren", new_callable=AsyncMock) as mock_search:
+            from src.collectors.bodacc import BodaccEntry
+            mock_search.return_value = [
+                BodaccEntry(
+                    numero_annonce="TEST-001",
+                    type_annonce="Modification",
+                    categorie="modification",
+                    date_publication=date(2024, 1, 15),
+                    siren="123456789",
+                    denomination="Test Company",
+                    contenu="Test content",
+                    tribunal="TC Paris",
+                    url="https://test.com",
+                )
+            ]
+
+            results = await collector.collect_for_competitor("123456789")
+
+            assert len(results) == 1
+            assert results[0].type_annonce == "Modification"
+
+
+class TestBodaccCategories:
+    """Tests pour les catégories BODACC."""
+
+    def test_all_categories_defined(self):
+        """Vérifie que toutes les catégories sont définies."""
+        from src.collectors.bodacc import BODACC_CATEGORIES
+
+        expected_categories = {
+            "creation", "modification", "radiation",
+            "procedure_collective", "vente", "depot_comptes"
+        }
+
+        actual_categories = set(BODACC_CATEGORIES.values())
+        assert expected_categories.issubset(actual_categories)

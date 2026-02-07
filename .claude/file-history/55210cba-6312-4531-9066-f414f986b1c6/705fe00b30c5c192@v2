@@ -1,0 +1,281 @@
+"""Tests pour le moteur de règles d'alertes."""
+
+from datetime import date, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+# Import des modules pour permettre le patching
+import src.alerting.rules
+
+
+class TestAlertEngine:
+    """Tests pour AlertEngine."""
+
+    @pytest.fixture
+    def mock_settings(self):
+        """Mock des settings."""
+        mock_settings = MagicMock()
+        mock_settings.alerting.rules.recrutement_massif.threshold = 5
+        mock_settings.alerting.rules.recrutement_massif.period_days = 30
+        mock_settings.alerting.rules.echeance_proche.days_before = 30
+        mock_settings.alerting.rules.echeance_imminente.days_before = 7
+        mock_settings.processing.sentiment.threshold_negative = -0.3
+
+        with patch("src.alerting.rules.get_settings", return_value=mock_settings):
+            yield mock_settings
+
+    @pytest.fixture
+    def mock_session(self):
+        """Mock de la session SQLAlchemy."""
+        session = AsyncMock()
+        session.add = MagicMock()
+        session.commit = AsyncMock()
+        session.execute = AsyncMock()
+        return session
+
+    @pytest.fixture
+    def engine(self, mock_settings, mock_session):
+        """Crée une instance du moteur d'alertes."""
+        from src.alerting.rules import AlertEngine
+        return AlertEngine(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_create_alert(self, engine, mock_session):
+        """Test de la création d'une alerte."""
+        alert = await engine._create_alert(
+            alert_type="NOUVELLE_LOI",
+            titre="Nouvelle loi test",
+            message="Description de la loi",
+            source_url="https://example.com",
+        )
+
+        assert alert is not None
+        assert alert.type == "NOUVELLE_LOI"
+        assert alert.titre == "Nouvelle loi test"
+        assert alert.categorie == "reglementaire"
+        assert alert.severite == "attention"
+        mock_session.add.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_create_alert_critique(self, engine, mock_session):
+        """Test de la création d'une alerte critique."""
+        alert = await engine._create_alert(
+            alert_type="PROCEDURE_COLLECTIVE",
+            titre="Procédure collective",
+            message="Redressement judiciaire",
+        )
+
+        assert alert.severite == "critique"
+        assert alert.categorie == "concurrent"
+
+    @pytest.mark.asyncio
+    async def test_check_recruitment_surge_below_threshold(self, engine, mock_session):
+        """Test de vérification de recrutement sous le seuil."""
+        from src.storage.models import Competitor
+
+        competitor = Competitor(
+            id="test-id",
+            siren="123456789",
+            nom="Test Company",
+        )
+
+        # Simuler 3 offres (sous le seuil de 5)
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 3
+        mock_session.execute.return_value = mock_result
+
+        alert = await engine.check_recruitment_surge(competitor)
+        assert alert is None
+
+    @pytest.mark.asyncio
+    async def test_check_recruitment_surge_above_threshold(self, engine, mock_session):
+        """Test de vérification de recrutement au-dessus du seuil."""
+        from src.storage.models import Competitor
+
+        competitor = Competitor(
+            id="test-id",
+            siren="123456789",
+            nom="Test Company",
+        )
+
+        # Simuler 10 offres (au-dessus du seuil de 5)
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 10
+        mock_session.execute.return_value = mock_result
+
+        alert = await engine.check_recruitment_surge(competitor)
+
+        assert alert is not None
+        assert alert.type == "RECRUTEMENT_MASSIF"
+        assert "Test Company" in alert.titre
+
+    @pytest.mark.asyncio
+    async def test_check_strategic_position_cto(self, engine, mock_session):
+        """Test de détection de poste stratégique - CTO."""
+        from src.storage.models import Competitor, JobOffer
+
+        job = JobOffer(
+            id="job-1",
+            competitor_id="comp-1",
+            titre="CTO - Chief Technology Officer",
+            url="https://example.com/job",
+            source="linkedin",
+        )
+
+        # Mock du concurrent
+        mock_result = MagicMock()
+        mock_competitor = Competitor(id="comp-1", siren="123", nom="Tech Corp")
+        mock_result.scalar_one_or_none.return_value = mock_competitor
+        mock_session.execute.return_value = mock_result
+
+        alert = await engine.check_strategic_position(job)
+
+        assert alert is not None
+        assert alert.type == "POSTE_STRATEGIQUE"
+        assert "Tech Corp" in alert.titre
+
+    @pytest.mark.asyncio
+    async def test_check_strategic_position_normal_job(self, engine, mock_session):
+        """Test qu'un poste normal ne génère pas d'alerte."""
+        from src.storage.models import JobOffer
+
+        job = JobOffer(
+            id="job-1",
+            competitor_id="comp-1",
+            titre="Développeur Python Junior",
+            url="https://example.com/job",
+            source="linkedin",
+        )
+
+        alert = await engine.check_strategic_position(job)
+        assert alert is None
+
+    @pytest.mark.asyncio
+    async def test_check_collective_procedure(self, engine, mock_session):
+        """Test de détection de procédure collective."""
+        from src.storage.models import BodaccAnnouncement, Competitor
+
+        announcement = BodaccAnnouncement(
+            id="ann-1",
+            competitor_id="comp-1",
+            numero_annonce="BODACC-2024-001",
+            type_annonce="Jugement d'ouverture",
+            categorie="procedure_collective",
+            date_publication=date.today(),
+            contenu="Ouverture d'une procédure de redressement judiciaire...",
+        )
+
+        mock_result = MagicMock()
+        mock_competitor = Competitor(id="comp-1", siren="123", nom="Company in Trouble")
+        mock_result.scalar_one_or_none.return_value = mock_competitor
+        mock_session.execute.return_value = mock_result
+
+        alert = await engine.check_collective_procedure(announcement)
+
+        assert alert is not None
+        assert alert.type == "PROCEDURE_COLLECTIVE"
+        assert alert.severite == "critique"
+
+    @pytest.mark.asyncio
+    async def test_check_collective_procedure_other_category(self, engine, mock_session):
+        """Test qu'une annonce non procédure collective ne génère pas d'alerte."""
+        from src.storage.models import BodaccAnnouncement
+
+        announcement = BodaccAnnouncement(
+            id="ann-1",
+            competitor_id="comp-1",
+            numero_annonce="BODACC-2024-002",
+            type_annonce="Modification",
+            categorie="modification",
+            date_publication=date.today(),
+            contenu="Changement de capital social",
+        )
+
+        alert = await engine.check_collective_procedure(announcement)
+        assert alert is None
+
+    @pytest.mark.asyncio
+    async def test_check_regulation_deadline_imminent(self, engine, mock_session):
+        """Test de détection d'échéance imminente."""
+        from src.storage.models import Regulation, RegulationDeadline
+
+        deadline = RegulationDeadline(
+            id="dl-1",
+            regulation_id="reg-1",
+            description="Mise en conformité obligatoire",
+            date_echeance=date.today() + timedelta(days=5),  # Dans 5 jours
+        )
+
+        mock_result = MagicMock()
+        mock_regulation = Regulation(
+            id="reg-1",
+            type="decret",
+            titre="Décret test",
+            source="legifrance",
+            url="https://example.com",
+        )
+        mock_result.scalar_one_or_none.return_value = mock_regulation
+        mock_session.execute.return_value = mock_result
+
+        alert = await engine.check_regulation_deadline(deadline)
+
+        assert alert is not None
+        assert alert.type == "ECHEANCE_IMMINENTE"
+        assert alert.severite == "critique"
+
+    @pytest.mark.asyncio
+    async def test_check_regulation_deadline_proche(self, engine, mock_session):
+        """Test de détection d'échéance proche."""
+        from src.storage.models import Regulation, RegulationDeadline
+
+        deadline = RegulationDeadline(
+            id="dl-1",
+            regulation_id="reg-1",
+            description="Mise en conformité obligatoire",
+            date_echeance=date.today() + timedelta(days=20),  # Dans 20 jours
+        )
+
+        mock_result = MagicMock()
+        mock_regulation = Regulation(
+            id="reg-1",
+            type="loi",
+            titre="Loi test",
+            source="legifrance",
+            url="https://example.com",
+        )
+        mock_result.scalar_one_or_none.return_value = mock_regulation
+        mock_session.execute.return_value = mock_result
+
+        alert = await engine.check_regulation_deadline(deadline)
+
+        assert alert is not None
+        assert alert.type == "ECHEANCE_PROCHE"
+        assert alert.severite == "important"
+
+
+class TestAlertTypes:
+    """Tests pour les types d'alertes."""
+
+    def test_all_alert_types_defined(self):
+        """Vérifie que tous les types d'alertes sont définis."""
+        from src.storage.models import ALERT_TYPES
+
+        # Types concurrentiels
+        assert "RECRUTEMENT_MASSIF" in ALERT_TYPES
+        assert "PROCEDURE_COLLECTIVE" in ALERT_TYPES
+        assert "LEVEE_FONDS" in ALERT_TYPES
+        assert "NOUVEAU_DIRIGEANT" in ALERT_TYPES
+
+        # Types réglementaires
+        assert "NOUVELLE_LOI" in ALERT_TYPES
+        assert "ECHEANCE_PROCHE" in ALERT_TYPES
+        assert "ECHEANCE_IMMINENTE" in ALERT_TYPES
+
+    def test_severity_order(self):
+        """Vérifie l'ordre des sévérités."""
+        from src.storage.models import SEVERITY_ORDER
+
+        assert SEVERITY_ORDER["info"] < SEVERITY_ORDER["attention"]
+        assert SEVERITY_ORDER["attention"] < SEVERITY_ORDER["important"]
+        assert SEVERITY_ORDER["important"] < SEVERITY_ORDER["critique"]

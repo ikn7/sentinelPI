@@ -1,0 +1,544 @@
+"""Dashboard Streamlit pour StratWatch."""
+
+import asyncio
+from datetime import date, datetime, timedelta
+
+import streamlit as st
+
+# Configuration de la page
+st.set_page_config(
+    page_title="StratWatch - Veille Stratégique",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+# =============================================================================
+# Fonctions utilitaires async
+# =============================================================================
+
+def run_async(coro):
+    """Exécute une coroutine de manière synchrone."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+async def get_db_session():
+    """Initialise et retourne une session de base de données."""
+    from src.storage import db
+    if not db.is_initialized:
+        await db.init()
+        await db.create_tables()
+    return db
+
+
+# =============================================================================
+# Fonctions de données
+# =============================================================================
+
+async def load_stats():
+    """Charge les statistiques globales."""
+    from sqlalchemy import func, select
+    from src.storage.models import Alert, Competitor, JobOffer, Regulation
+
+    db = await get_db_session()
+    async with db.session() as session:
+        competitors = await session.execute(
+            select(func.count(Competitor.id)).where(Competitor.actif == True)
+        )
+        alerts_unread = await session.execute(
+            select(func.count(Alert.id)).where(Alert.read_at == None)
+        )
+        alerts_critical = await session.execute(
+            select(func.count(Alert.id)).where(
+                Alert.read_at == None,
+                Alert.severite == "critique"
+            )
+        )
+        regulations = await session.execute(select(func.count(Regulation.id)))
+        jobs = await session.execute(
+            select(func.count(JobOffer.id)).where(JobOffer.active == True)
+        )
+
+        return {
+            "competitors": competitors.scalar() or 0,
+            "alerts_unread": alerts_unread.scalar() or 0,
+            "alerts_critical": alerts_critical.scalar() or 0,
+            "regulations": regulations.scalar() or 0,
+            "job_offers": jobs.scalar() or 0,
+        }
+
+
+async def load_recent_alerts(limit: int = 10):
+    """Charge les alertes récentes."""
+    from sqlalchemy import select
+    from src.storage.models import Alert, Competitor
+
+    db = await get_db_session()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Alert)
+            .order_by(Alert.created_at.desc())
+            .limit(limit)
+        )
+
+        alerts = []
+        for alert in result.scalars():
+            competitor_name = None
+            if alert.competitor_id:
+                comp = await session.execute(
+                    select(Competitor.nom).where(Competitor.id == alert.competitor_id)
+                )
+                competitor_name = comp.scalar()
+
+            alerts.append({
+                "id": alert.id,
+                "type": alert.type,
+                "categorie": alert.categorie,
+                "severite": alert.severite,
+                "titre": alert.titre,
+                "message": alert.message,
+                "competitor": competitor_name,
+                "created_at": alert.created_at,
+                "read": alert.read_at is not None,
+            })
+
+        return alerts
+
+
+async def load_competitors():
+    """Charge la liste des concurrents."""
+    from sqlalchemy import select
+    from src.storage.models import Competitor
+
+    db = await get_db_session()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Competitor)
+            .where(Competitor.actif == True)
+            .order_by(Competitor.priorite, Competitor.nom)
+        )
+        return list(result.scalars().all())
+
+
+async def load_competitor_detail(competitor_id: str):
+    """Charge les détails d'un concurrent."""
+    from sqlalchemy import func, select
+    from src.storage.models import (
+        Competitor, Dirigeant, Financial, JobOffer,
+        Alert, NewsMention, BodaccAnnouncement
+    )
+
+    db = await get_db_session()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Competitor).where(Competitor.id == competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+
+        if not competitor:
+            return None
+
+        # Dirigeants
+        dirigeants = await session.execute(
+            select(Dirigeant).where(
+                Dirigeant.competitor_id == competitor_id,
+                Dirigeant.actif == True
+            )
+        )
+
+        # Finances
+        financials = await session.execute(
+            select(Financial)
+            .where(Financial.competitor_id == competitor_id)
+            .order_by(Financial.annee.desc())
+        )
+
+        # Offres récentes
+        jobs = await session.execute(
+            select(JobOffer)
+            .where(JobOffer.competitor_id == competitor_id, JobOffer.active == True)
+            .order_by(JobOffer.date_detection.desc())
+            .limit(10)
+        )
+
+        # Alertes récentes
+        alerts = await session.execute(
+            select(Alert)
+            .where(Alert.competitor_id == competitor_id)
+            .order_by(Alert.created_at.desc())
+            .limit(5)
+        )
+
+        return {
+            "competitor": competitor,
+            "dirigeants": list(dirigeants.scalars().all()),
+            "financials": list(financials.scalars().all()),
+            "jobs": list(jobs.scalars().all()),
+            "alerts": list(alerts.scalars().all()),
+        }
+
+
+async def load_regulations(limit: int = 20):
+    """Charge les réglementations récentes."""
+    from sqlalchemy import select
+    from src.storage.models import Regulation
+
+    db = await get_db_session()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Regulation)
+            .order_by(Regulation.date_publication.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+async def load_deadlines(days: int = 30):
+    """Charge les échéances à venir."""
+    from sqlalchemy import select
+    from src.storage.models import Regulation, RegulationDeadline
+
+    db = await get_db_session()
+    async with db.session() as session:
+        today = date.today()
+        result = await session.execute(
+            select(RegulationDeadline, Regulation.titre)
+            .join(Regulation)
+            .where(
+                RegulationDeadline.date_echeance >= today,
+                RegulationDeadline.date_echeance <= today + timedelta(days=days)
+            )
+            .order_by(RegulationDeadline.date_echeance)
+        )
+        return [(d, t) for d, t in result.all()]
+
+
+# =============================================================================
+# Interface utilisateur
+# =============================================================================
+
+def render_sidebar():
+    """Affiche la barre latérale."""
+    with st.sidebar:
+        st.title("📊 StratWatch")
+        st.caption("Veille stratégique")
+
+        st.divider()
+
+        page = st.radio(
+            "Navigation",
+            ["🏠 Dashboard", "🏢 Concurrents", "📜 Réglementation", "🔔 Alertes"],
+            label_visibility="collapsed",
+        )
+
+        st.divider()
+
+        # Bouton de rafraîchissement
+        if st.button("🔄 Rafraîchir", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+        st.divider()
+
+        st.caption("StratWatch v1.0.0")
+
+        return page
+
+
+def render_dashboard():
+    """Affiche la page dashboard."""
+    st.title("🏠 Dashboard")
+
+    # Statistiques
+    stats = run_async(load_stats())
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        st.metric("Concurrents", stats["competitors"])
+    with col2:
+        st.metric("Alertes non lues", stats["alerts_unread"])
+    with col3:
+        st.metric("Alertes critiques", stats["alerts_critical"], delta_color="inverse")
+    with col4:
+        st.metric("Réglementations", stats["regulations"])
+    with col5:
+        st.metric("Offres d'emploi", stats["job_offers"])
+
+    st.divider()
+
+    # Deux colonnes
+    col_left, col_right = st.columns([2, 1])
+
+    with col_left:
+        st.subheader("🔔 Alertes récentes")
+        alerts = run_async(load_recent_alerts(10))
+
+        if not alerts:
+            st.info("Aucune alerte")
+        else:
+            for alert in alerts:
+                severity_colors = {
+                    "critique": "🔴",
+                    "important": "🟠",
+                    "attention": "🟡",
+                    "info": "🔵",
+                }
+                icon = severity_colors.get(alert["severite"], "⚪")
+                read_icon = "" if alert["read"] else " 🆕"
+
+                with st.expander(f"{icon} {alert['titre']}{read_icon}"):
+                    st.write(alert["message"])
+                    if alert["competitor"]:
+                        st.caption(f"🏢 {alert['competitor']}")
+                    st.caption(f"📅 {alert['created_at'].strftime('%d/%m/%Y %H:%M')}")
+
+    with col_right:
+        st.subheader("⏰ Échéances à venir")
+        deadlines = run_async(load_deadlines(30))
+
+        if not deadlines:
+            st.info("Aucune échéance dans les 30 prochains jours")
+        else:
+            for deadline, titre in deadlines[:5]:
+                days_until = (deadline.date_echeance - date.today()).days
+
+                if days_until <= 7:
+                    color = "red"
+                elif days_until <= 14:
+                    color = "orange"
+                else:
+                    color = "green"
+
+                st.markdown(f":{color}[**{days_until}j**] {deadline.description[:50]}")
+                st.caption(titre[:60] + "..." if len(titre) > 60 else titre)
+
+
+def render_competitors():
+    """Affiche la page des concurrents."""
+    st.title("🏢 Concurrents")
+
+    competitors = run_async(load_competitors())
+
+    if not competitors:
+        st.info("Aucun concurrent configuré")
+        st.markdown("""
+        Pour ajouter des concurrents, éditez le fichier `config/competitors.yaml`
+        ou utilisez la commande:
+        ```bash
+        stratwatch collect search "nom entreprise"
+        ```
+        """)
+        return
+
+    # Sélection du concurrent
+    competitor_names = {c.nom: c.id for c in competitors}
+    selected_name = st.selectbox(
+        "Sélectionner un concurrent",
+        options=list(competitor_names.keys()),
+    )
+
+    if selected_name:
+        competitor_id = competitor_names[selected_name]
+        data = run_async(load_competitor_detail(competitor_id))
+
+        if data:
+            comp = data["competitor"]
+
+            # Informations générales
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("📋 Informations")
+                st.write(f"**SIREN:** {comp.siren}")
+                st.write(f"**Forme juridique:** {comp.forme_juridique or 'N/A'}")
+                st.write(f"**Code NAF:** {comp.code_naf or 'N/A'}")
+                if comp.capital_social:
+                    st.write(f"**Capital:** {comp.capital_social:,} €".replace(",", " "))
+                if comp.site_web:
+                    st.write(f"**Site web:** [{comp.site_web}]({comp.site_web})")
+
+            with col2:
+                st.subheader("👥 Dirigeants")
+                if data["dirigeants"]:
+                    for d in data["dirigeants"]:
+                        name = f"{d.prenom or ''} {d.nom}".strip()
+                        st.write(f"• **{name}** - {d.fonction}")
+                else:
+                    st.info("Aucun dirigeant enregistré")
+
+            st.divider()
+
+            # Données financières
+            if data["financials"]:
+                st.subheader("💰 Données financières")
+                fin_data = []
+                for f in data["financials"][:5]:
+                    fin_data.append({
+                        "Année": f.annee,
+                        "CA (€)": f"{f.chiffre_affaires:,}".replace(",", " ") if f.chiffre_affaires else "N/A",
+                        "Résultat (€)": f"{f.resultat_net:,}".replace(",", " ") if f.resultat_net else "N/A",
+                        "Effectif": f.effectif or "N/A",
+                    })
+                st.table(fin_data)
+
+            # Offres d'emploi
+            st.subheader("💼 Offres d'emploi récentes")
+            if data["jobs"]:
+                for job in data["jobs"][:5]:
+                    st.write(f"• [{job.titre}]({job.url}) - {job.source}")
+            else:
+                st.info("Aucune offre d'emploi")
+
+            # Alertes
+            st.subheader("🔔 Alertes récentes")
+            if data["alerts"]:
+                for alert in data["alerts"]:
+                    st.write(f"• **[{alert.severite.upper()}]** {alert.titre}")
+            else:
+                st.info("Aucune alerte")
+
+
+def render_regulations():
+    """Affiche la page réglementation."""
+    st.title("📜 Réglementation")
+
+    tab1, tab2 = st.tabs(["📰 Textes récents", "⏰ Échéances"])
+
+    with tab1:
+        regulations = run_async(load_regulations(30))
+
+        if not regulations:
+            st.info("Aucune réglementation collectée")
+        else:
+            for reg in regulations:
+                type_icons = {
+                    "loi": "📕",
+                    "decret": "📗",
+                    "arrete": "📘",
+                    "ordonnance": "📙",
+                }
+                icon = type_icons.get(reg.type, "📄")
+                titre = reg.titre_court or reg.titre[:80]
+
+                with st.expander(f"{icon} {titre}"):
+                    st.write(f"**Type:** {reg.type}")
+                    if reg.numero:
+                        st.write(f"**Numéro:** {reg.numero}")
+                    if reg.date_publication:
+                        st.write(f"**Publication:** {reg.date_publication.strftime('%d/%m/%Y')}")
+                    if reg.resume:
+                        st.write(reg.resume[:500])
+                    st.markdown(f"[Voir le texte complet]({reg.url})")
+
+    with tab2:
+        days = st.slider("Horizon (jours)", 7, 90, 30)
+        deadlines = run_async(load_deadlines(days))
+
+        if not deadlines:
+            st.info(f"Aucune échéance dans les {days} prochains jours")
+        else:
+            for deadline, titre in deadlines:
+                days_until = (deadline.date_echeance - date.today()).days
+
+                if days_until <= 7:
+                    st.error(f"⚠️ **{days_until} jours** - {deadline.description}")
+                elif days_until <= 14:
+                    st.warning(f"⏳ **{days_until} jours** - {deadline.description}")
+                else:
+                    st.info(f"📅 **{days_until} jours** - {deadline.description}")
+
+                st.caption(titre[:80])
+                st.divider()
+
+
+def render_alerts():
+    """Affiche la page des alertes."""
+    st.title("🔔 Alertes")
+
+    # Filtres
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        category_filter = st.selectbox(
+            "Catégorie",
+            ["Toutes", "concurrent", "reglementaire", "croisee"],
+        )
+    with col2:
+        severity_filter = st.selectbox(
+            "Sévérité",
+            ["Toutes", "critique", "important", "attention", "info"],
+        )
+    with col3:
+        show_read = st.checkbox("Inclure les lues", value=False)
+
+    # Charger les alertes
+    alerts = run_async(load_recent_alerts(50))
+
+    # Appliquer les filtres
+    if category_filter != "Toutes":
+        alerts = [a for a in alerts if a["categorie"] == category_filter]
+    if severity_filter != "Toutes":
+        alerts = [a for a in alerts if a["severite"] == severity_filter]
+    if not show_read:
+        alerts = [a for a in alerts if not a["read"]]
+
+    # Afficher
+    st.caption(f"{len(alerts)} alerte(s)")
+
+    if not alerts:
+        st.success("🎉 Aucune alerte non lue!")
+    else:
+        for alert in alerts:
+            severity_colors = {
+                "critique": "🔴",
+                "important": "🟠",
+                "attention": "🟡",
+                "info": "🔵",
+            }
+            icon = severity_colors.get(alert["severite"], "⚪")
+            read_badge = " ✓" if alert["read"] else ""
+
+            with st.container():
+                st.markdown(f"### {icon} {alert['titre']}{read_badge}")
+                st.write(alert["message"])
+
+                cols = st.columns(4)
+                with cols[0]:
+                    st.caption(f"📁 {alert['categorie']}")
+                with cols[1]:
+                    st.caption(f"⚡ {alert['severite']}")
+                with cols[2]:
+                    if alert["competitor"]:
+                        st.caption(f"🏢 {alert['competitor']}")
+                with cols[3]:
+                    st.caption(f"📅 {alert['created_at'].strftime('%d/%m %H:%M')}")
+
+                st.divider()
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+def main():
+    """Point d'entrée principal."""
+    page = render_sidebar()
+
+    if page == "🏠 Dashboard":
+        render_dashboard()
+    elif page == "🏢 Concurrents":
+        render_competitors()
+    elif page == "📜 Réglementation":
+        render_regulations()
+    elif page == "🔔 Alertes":
+        render_alerts()
+
+
+if __name__ == "__main__":
+    main()

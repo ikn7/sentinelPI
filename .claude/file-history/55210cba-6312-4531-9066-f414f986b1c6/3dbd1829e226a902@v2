@@ -1,0 +1,379 @@
+"""Routes API pour les rapports."""
+
+from datetime import date, datetime, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select
+
+from src.storage import db
+from src.storage.models import (
+    Alert, Competitor, JobOffer, NewsMention,
+    Regulation, RegulationDeadline, BodaccAnnouncement
+)
+
+router = APIRouter()
+
+
+# =============================================================================
+# Modèles Pydantic
+# =============================================================================
+
+class CompetitorSummary(BaseModel):
+    """Résumé d'un concurrent."""
+    id: str
+    siren: str
+    nom: str
+    priorite: int
+    job_offers_count: int
+    alerts_count: int
+    last_news: Optional[datetime] = None
+
+
+class DashboardReport(BaseModel):
+    """Rapport pour le dashboard."""
+    generated_at: datetime
+    period_days: int
+
+    # Statistiques globales
+    total_competitors: int
+    total_alerts: int
+    unread_alerts: int
+    critical_alerts: int
+
+    # Alertes récentes par catégorie
+    alerts_by_category: dict[str, int]
+    alerts_by_severity: dict[str, int]
+
+    # Top concurrents par activité
+    top_competitors: list[CompetitorSummary]
+
+    # Échéances à venir
+    upcoming_deadlines: int
+
+    # Tendances
+    new_job_offers: int
+    new_regulations: int
+    new_bodacc: int
+
+
+class CompetitorReport(BaseModel):
+    """Rapport détaillé sur un concurrent."""
+    generated_at: datetime
+    competitor: dict
+    job_offers_trend: list[dict]
+    recent_alerts: list[dict]
+    recent_news: list[dict]
+    recent_bodacc: list[dict]
+    financial_summary: Optional[dict] = None
+
+
+class RegulationReport(BaseModel):
+    """Rapport sur la veille réglementaire."""
+    generated_at: datetime
+    period_days: int
+    new_regulations: list[dict]
+    upcoming_deadlines: list[dict]
+    by_type: dict[str, int]
+    by_sector: dict[str, int]
+
+
+# =============================================================================
+# Routes
+# =============================================================================
+
+@router.get("/dashboard", response_model=DashboardReport)
+async def get_dashboard_report(
+    days: int = Query(7, ge=1, le=90, description="Période en jours"),
+):
+    """Génère un rapport pour le dashboard."""
+    async with db.session() as session:
+        since = datetime.now() - timedelta(days=days)
+        today = date.today()
+
+        # Statistiques globales
+        competitors_count = await session.execute(
+            select(func.count(Competitor.id)).where(Competitor.actif == True)
+        )
+
+        total_alerts = await session.execute(select(func.count(Alert.id)))
+        unread_alerts = await session.execute(
+            select(func.count(Alert.id)).where(Alert.read_at == None)
+        )
+        critical_alerts = await session.execute(
+            select(func.count(Alert.id)).where(
+                Alert.read_at == None,
+                Alert.severite == "critique"
+            )
+        )
+
+        # Alertes par catégorie
+        alerts_by_cat = await session.execute(
+            select(Alert.categorie, func.count(Alert.id))
+            .where(Alert.created_at >= since)
+            .group_by(Alert.categorie)
+        )
+
+        # Alertes par sévérité
+        alerts_by_sev = await session.execute(
+            select(Alert.severite, func.count(Alert.id))
+            .where(Alert.created_at >= since)
+            .group_by(Alert.severite)
+        )
+
+        # Top concurrents
+        top_competitors_query = await session.execute(
+            select(Competitor)
+            .where(Competitor.actif == True)
+            .order_by(Competitor.priorite)
+            .limit(10)
+        )
+
+        top_competitors = []
+        for comp in top_competitors_query.scalars():
+            jobs = await session.execute(
+                select(func.count(JobOffer.id)).where(
+                    JobOffer.competitor_id == comp.id,
+                    JobOffer.date_detection >= since
+                )
+            )
+            alerts = await session.execute(
+                select(func.count(Alert.id)).where(
+                    Alert.competitor_id == comp.id,
+                    Alert.created_at >= since
+                )
+            )
+            last_news = await session.execute(
+                select(NewsMention.collected_at)
+                .where(NewsMention.competitor_id == comp.id)
+                .order_by(NewsMention.collected_at.desc())
+                .limit(1)
+            )
+
+            top_competitors.append(CompetitorSummary(
+                id=comp.id,
+                siren=comp.siren,
+                nom=comp.nom,
+                priorite=comp.priorite,
+                job_offers_count=jobs.scalar() or 0,
+                alerts_count=alerts.scalar() or 0,
+                last_news=last_news.scalar(),
+            ))
+
+        # Échéances à venir
+        deadlines = await session.execute(
+            select(func.count(RegulationDeadline.id)).where(
+                RegulationDeadline.date_echeance >= today,
+                RegulationDeadline.date_echeance <= today + timedelta(days=30),
+                RegulationDeadline.statut == "a_venir"
+            )
+        )
+
+        # Nouvelles données
+        new_jobs = await session.execute(
+            select(func.count(JobOffer.id)).where(JobOffer.date_detection >= since)
+        )
+        new_regs = await session.execute(
+            select(func.count(Regulation.id)).where(Regulation.collected_at >= since)
+        )
+        new_bodacc = await session.execute(
+            select(func.count(BodaccAnnouncement.id)).where(
+                BodaccAnnouncement.collected_at >= since
+            )
+        )
+
+        return DashboardReport(
+            generated_at=datetime.now(),
+            period_days=days,
+            total_competitors=competitors_count.scalar() or 0,
+            total_alerts=total_alerts.scalar() or 0,
+            unread_alerts=unread_alerts.scalar() or 0,
+            critical_alerts=critical_alerts.scalar() or 0,
+            alerts_by_category={row[0]: row[1] for row in alerts_by_cat.all()},
+            alerts_by_severity={row[0]: row[1] for row in alerts_by_sev.all()},
+            top_competitors=top_competitors,
+            upcoming_deadlines=deadlines.scalar() or 0,
+            new_job_offers=new_jobs.scalar() or 0,
+            new_regulations=new_regs.scalar() or 0,
+            new_bodacc=new_bodacc.scalar() or 0,
+        )
+
+
+@router.get("/competitor/{competitor_id}", response_model=CompetitorReport)
+async def get_competitor_report(
+    competitor_id: str,
+    days: int = Query(30, ge=1, le=180),
+):
+    """Génère un rapport détaillé sur un concurrent."""
+    async with db.session() as session:
+        since = datetime.now() - timedelta(days=days)
+
+        # Récupérer le concurrent
+        result = await session.execute(
+            select(Competitor).where(Competitor.id == competitor_id)
+        )
+        competitor = result.scalar_one_or_none()
+
+        if not competitor:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Concurrent non trouvé")
+
+        # Tendance des offres d'emploi (par semaine)
+        job_trend = []
+        for i in range(min(days // 7, 12)):
+            week_start = datetime.now() - timedelta(weeks=i+1)
+            week_end = datetime.now() - timedelta(weeks=i)
+            count = await session.execute(
+                select(func.count(JobOffer.id)).where(
+                    JobOffer.competitor_id == competitor_id,
+                    JobOffer.date_detection >= week_start,
+                    JobOffer.date_detection < week_end
+                )
+            )
+            job_trend.append({
+                "week": f"S-{i+1}",
+                "count": count.scalar() or 0
+            })
+
+        # Alertes récentes
+        alerts_result = await session.execute(
+            select(Alert)
+            .where(Alert.competitor_id == competitor_id)
+            .order_by(Alert.created_at.desc())
+            .limit(10)
+        )
+        recent_alerts = [
+            {
+                "id": a.id,
+                "type": a.type,
+                "severite": a.severite,
+                "titre": a.titre,
+                "created_at": a.created_at.isoformat()
+            }
+            for a in alerts_result.scalars()
+        ]
+
+        # Mentions presse récentes
+        news_result = await session.execute(
+            select(NewsMention)
+            .where(NewsMention.competitor_id == competitor_id)
+            .order_by(NewsMention.collected_at.desc())
+            .limit(10)
+        )
+        recent_news = [
+            {
+                "id": n.id,
+                "titre": n.titre,
+                "media": n.media,
+                "sentiment": n.sentiment,
+                "date": n.date_publication.isoformat() if n.date_publication else None,
+                "url": n.url
+            }
+            for n in news_result.scalars()
+        ]
+
+        # Annonces BODACC récentes
+        bodacc_result = await session.execute(
+            select(BodaccAnnouncement)
+            .where(BodaccAnnouncement.competitor_id == competitor_id)
+            .order_by(BodaccAnnouncement.date_publication.desc())
+            .limit(5)
+        )
+        recent_bodacc = [
+            {
+                "id": b.id,
+                "type": b.type_annonce,
+                "categorie": b.categorie,
+                "date": b.date_publication.isoformat(),
+                "contenu": b.contenu[:200] + "..." if len(b.contenu) > 200 else b.contenu
+            }
+            for b in bodacc_result.scalars()
+        ]
+
+        return CompetitorReport(
+            generated_at=datetime.now(),
+            competitor={
+                "id": competitor.id,
+                "siren": competitor.siren,
+                "nom": competitor.nom,
+                "forme_juridique": competitor.forme_juridique,
+                "capital_social": competitor.capital_social,
+                "code_naf": competitor.code_naf,
+                "site_web": competitor.site_web,
+            },
+            job_offers_trend=list(reversed(job_trend)),
+            recent_alerts=recent_alerts,
+            recent_news=recent_news,
+            recent_bodacc=recent_bodacc,
+        )
+
+
+@router.get("/regulations", response_model=RegulationReport)
+async def get_regulation_report(
+    days: int = Query(30, ge=1, le=180),
+):
+    """Génère un rapport sur la veille réglementaire."""
+    async with db.session() as session:
+        since = datetime.now() - timedelta(days=days)
+        today = date.today()
+
+        # Nouvelles réglementations
+        regs_result = await session.execute(
+            select(Regulation)
+            .where(Regulation.collected_at >= since)
+            .order_by(Regulation.date_publication.desc())
+            .limit(20)
+        )
+        new_regulations = [
+            {
+                "id": r.id,
+                "type": r.type,
+                "titre": r.titre_court or r.titre[:100],
+                "date_publication": r.date_publication.isoformat() if r.date_publication else None,
+                "source": r.source,
+                "url": r.url
+            }
+            for r in regs_result.scalars()
+        ]
+
+        # Échéances à venir
+        deadlines_result = await session.execute(
+            select(RegulationDeadline, Regulation.titre)
+            .join(Regulation)
+            .where(
+                RegulationDeadline.date_echeance >= today,
+                RegulationDeadline.date_echeance <= today + timedelta(days=60)
+            )
+            .order_by(RegulationDeadline.date_echeance)
+            .limit(10)
+        )
+        upcoming_deadlines = [
+            {
+                "id": d.id,
+                "description": d.description,
+                "date_echeance": d.date_echeance.isoformat(),
+                "days_until": (d.date_echeance - today).days,
+                "regulation_titre": titre[:80]
+            }
+            for d, titre in deadlines_result.all()
+        ]
+
+        # Par type
+        by_type_result = await session.execute(
+            select(Regulation.type, func.count(Regulation.id))
+            .where(Regulation.collected_at >= since)
+            .group_by(Regulation.type)
+        )
+
+        # Par secteur (approximatif)
+        by_sector = {}  # À implémenter avec parsing JSON
+
+        return RegulationReport(
+            generated_at=datetime.now(),
+            period_days=days,
+            new_regulations=new_regulations,
+            upcoming_deadlines=upcoming_deadlines,
+            by_type={row[0]: row[1] for row in by_type_result.all()},
+            by_sector=by_sector,
+        )

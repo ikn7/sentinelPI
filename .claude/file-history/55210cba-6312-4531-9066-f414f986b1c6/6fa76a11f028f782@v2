@@ -1,0 +1,105 @@
+# {{ title }}
+
+**Période**: Du {{ period_start|format_date }} au {{ period_end|format_date }}
+
+**Généré le**: {{ generated_at|format_date('%d/%m/%Y à %H:%M') }}
+
+---
+
+## Résumé
+
+| Métrique | Valeur |
+|----------|--------|
+| Concurrents surveillés | {{ stats.competitors_count }} |
+| Alertes cette semaine | {{ stats.total_alerts }} |
+| Alertes critiques | {{ stats.critical_alerts }} |
+| Nouvelles offres d'emploi | {{ stats.new_job_offers }} |
+| Nouveaux textes réglementaires | {{ stats.new_regulations }} |
+
+---
+
+{% set critical_alerts = alerts|selectattr('severite', 'equalto', 'critique')|list %}
+{% if critical_alerts %}
+## Alertes critiques
+
+{% for alert in critical_alerts %}
+### {{ alert.titre }}
+
+- **Sévérité**: CRITIQUE
+- **Catégorie**: {{ alert.categorie }}
+{% if alert.competitor %}- **Concurrent**: {{ alert.competitor }}{% endif %}
+- **Date**: {{ alert.created_at|format_date('%d/%m/%Y %H:%M') }}
+{% if alert.source_url %}- **Source**: [Lien]({{ alert.source_url }}){% endif %}
+
+{{ alert.message }}
+
+---
+
+{% endfor %}
+{% endif %}
+
+{% if deadlines %}
+## Échéances à venir
+
+| Jours | Description | Réglementation |
+|-------|-------------|----------------|
+{% for deadline in deadlines[:10] %}
+| {{ deadline.days_until }}j | {{ deadline.description }} | {{ deadline.regulation_titre|truncate_text(50) }} |
+{% endfor %}
+
+---
+
+{% endif %}
+
+{% if competitors %}
+## Résumé des concurrents
+
+| Entreprise | SIREN | Alertes | Offres | CA | Effectif |
+|------------|-------|---------|--------|-----|----------|
+{% for comp in competitors %}
+| **{{ comp.nom }}** | {{ comp.siren }} | {{ comp.alerts_count or '-' }} | {{ comp.jobs_count or '-' }} | {{ comp.last_ca|format_currency if comp.last_ca else '-' }} | {{ comp.last_effectif or '-' }} |
+{% endfor %}
+
+---
+
+{% endif %}
+
+{% if regulations %}
+## Nouveaux textes réglementaires
+
+{% for reg in regulations[:15] %}
+### {{ reg.titre|truncate_text(80) }}
+
+- **Type**: {{ reg.type }}
+- **Source**: {{ reg.source }}
+- **Date**: {{ reg.date_publication|format_date if reg.date_publication else 'N/A' }}
+- **Lien**: [Consulter]({{ reg.url }})
+
+{% endfor %}
+
+---
+
+{% endif %}
+
+{% if alerts %}
+## Toutes les alertes
+
+{% for alert in alerts[:30] %}
+### [{{ alert.severite|upper }}] {{ alert.titre }}
+
+- **Catégorie**: {{ alert.categorie }}
+{% if alert.competitor %}- **Concurrent**: {{ alert.competitor }}{% endif %}
+- **Date**: {{ alert.created_at|format_date('%d/%m %H:%M') }}
+
+{{ alert.message|truncate_text(200) }}
+
+---
+
+{% endfor %}
+{% endif %}
+
+---
+
+*StratWatch - Plateforme de veille stratégique*
+
+*Rapport généré automatiquement*

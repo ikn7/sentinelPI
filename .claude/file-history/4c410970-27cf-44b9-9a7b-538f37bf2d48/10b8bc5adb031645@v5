@@ -1,0 +1,3691 @@
+"""
+SentinelPi Dashboard - Main Streamlit application.
+
+Provides a web interface for monitoring and managing the watch station.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from datetime import datetime, timedelta
+
+import streamlit as st
+
+from src.utils.config import get_settings
+from src.utils.logging import create_logger, setup_logging
+
+log = create_logger("dashboard.app")
+
+
+def _get_app_config() -> tuple[str, str]:
+    """Get the application name and icon from settings (for early use before full config load)."""
+    import yaml
+    from src.utils.config import PROJECT_ROOT
+    try:
+        settings_path = PROJECT_ROOT / "config" / "settings.yaml"
+        if settings_path.exists():
+            with open(settings_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+                app = raw.get("app", {})
+                return app.get("name", "SentinelPi"), app.get("icon", "🛡️")
+    except Exception:
+        pass
+    return "SentinelPi", "🛡️"
+
+
+# Load app name and icon early for page config
+APP_NAME, APP_ICON = _get_app_config()
+
+
+def run_async(coro):
+    """Run an async coroutine from sync context."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
+async def add_to_db(source):
+    """Add a source to the database."""
+    from src.storage.database import get_session
+    async with get_session() as session:
+        session.add(source)
+        await session.commit()
+
+
+async def run_collection_now(source_id: str | None = None) -> dict:
+    """
+    Run collection immediately for one or all enabled sources.
+
+    Returns dict with results summary.
+    """
+    from src.storage.database import get_session, init_database
+    from src.storage.models import Source, Item, ItemStatus
+    from src.collectors import create_collector
+    from src.processors import Deduplicator, FilterEngine, Scorer, Enricher, load_filters_from_config
+    from sqlalchemy import select
+
+    await init_database()
+
+    async with get_session() as session:
+        if source_id:
+            result = await session.execute(select(Source).where(Source.id == source_id))
+            sources = [result.scalar_one_or_none()]
+            sources = [s for s in sources if s]
+        else:
+            result = await session.execute(select(Source).where(Source.enabled == True))
+            sources = result.scalars().all()
+
+    if not sources:
+        return {"success": False, "message": "Aucune source trouvée", "items": 0}
+
+    total_items = 0
+    errors = []
+
+    for source in sources:
+        try:
+            collector = create_collector(source)
+            items = []
+            async for item in collector.collect():
+                items.append(item)
+            total_items += len(items)
+
+            # Enrich items
+            from src.processors.enricher import Enricher
+            enricher = Enricher()
+
+            # Store items
+            from src.utils.dates import now as utc_now
+            async with get_session() as session:
+                for ci in items:
+                    # Check duplicate
+                    existing = await session.execute(
+                        select(Item.id).where(
+                            Item.guid == ci.guid,
+                            Item.source_id == source.id,
+                        )
+                    )
+                    if existing.scalar():
+                        continue
+
+                    # Enrich the item
+                    try:
+                        enrichment = enricher.enrich(ci)
+                    except Exception:
+                        enrichment = None
+
+                    db_item = Item()
+                    db_item.source_id = source.id
+                    db_item.guid = ci.guid
+                    db_item.content_hash = ci.content_hash
+                    db_item.title = ci.title
+                    db_item.url = ci.url
+                    db_item.author = ci.author
+                    db_item.content = ci.content
+                    db_item.summary = (ci.summary or (enrichment.summary if enrichment else None))
+                    db_item.published_at = ci.published_at
+                    db_item.collected_at = ci.collected_at
+                    db_item.image_url = ci.image_url
+                    db_item.language = (enrichment.language if enrichment else None) or ci.language
+                    db_item.keywords = enrichment.keywords if enrichment else []
+                    db_item.sentiment = enrichment.sentiment if enrichment else None
+                    db_item.sentiment_score = enrichment.sentiment_score if enrichment else None
+                    db_item.status = ItemStatus.NEW
+                    db_item.relevance_score = 50.0
+                    session.add(db_item)
+
+                # Update source last_check
+                src_result = await session.execute(select(Source).where(Source.id == source.id))
+                src_obj = src_result.scalar_one_or_none()
+                if src_obj:
+                    src_obj.last_check = utc_now()
+                    src_obj.last_success = utc_now()
+                    src_obj.consecutive_errors = 0
+
+                await session.commit()
+
+        except Exception as e:
+            errors.append(f"{source.name}: {str(e)[:80]}")
+
+    msg = f"{total_items} items collectés depuis {len(sources)} source(s)"
+    if errors:
+        msg += f" ({len(errors)} erreur(s))"
+
+    return {"success": True, "message": msg, "items": total_items, "errors": errors}
+
+
+async def reset_database(keep_sources: bool = False) -> None:
+    """Reset the database, optionally keeping sources and filters."""
+    from src.storage.database import get_session, init_database
+    from src.storage.models import Item, Alert, Source, Filter
+    from sqlalchemy import delete
+
+    await init_database()
+
+    async with get_session() as session:
+        await session.execute(delete(Item))
+        await session.execute(delete(Alert))
+
+        if not keep_sources:
+            await session.execute(delete(Filter))
+            await session.execute(delete(Source))
+
+        await session.commit()
+
+
+async def sync_sources_from_yaml():
+    """Sync sources from YAML config to database."""
+    from src.storage.database import get_session, init_database
+    from src.storage.models import Source, SourceType
+    from src.utils.config import load_sources_config
+    from sqlalchemy import select
+
+    # Ensure database is initialized
+    await init_database()
+
+    sources_config = load_sources_config()
+    sources_list = sources_config.get("sources", [])
+
+    async with get_session() as session:
+        for config in sources_list:
+            # Generate deterministic ID from name + URL
+            source_key = f"{config.get('name', '')}:{config.get('url', '')}"
+            source_id = hashlib.sha256(source_key.encode()).hexdigest()[:32]
+
+            # Check if exists
+            result = await session.execute(
+                select(Source).where(Source.id == source_id)
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # Update
+                existing.name = config.get("name", existing.name)
+                existing.url = config.get("url", existing.url)
+                existing.enabled = config.get("enabled", True)
+                existing.interval_minutes = config.get("interval_minutes", 60)
+                existing.priority = config.get("priority", 2)
+                existing.category = config.get("category")
+                existing.tags = config.get("tags", [])
+                existing.config = config.get("config", {})
+            else:
+                # Create
+                source = Source()
+                source.id = source_id
+                source.name = config.get("name", "Unnamed")
+                source.type = SourceType(config.get("type", "rss"))
+                source.url = config.get("url", "")
+                source.enabled = config.get("enabled", True)
+                source.interval_minutes = config.get("interval_minutes", 60)
+                source.priority = config.get("priority", 2)
+                source.category = config.get("category")
+                source.tags = config.get("tags", [])
+                source.config = config.get("config", {})
+                session.add(source)
+
+        await session.commit()
+
+    return len(sources_list)
+
+
+async def sync_filters_from_yaml():
+    """Sync filters from YAML config to database."""
+    from src.storage.database import get_session, init_database
+    from src.storage.models import Filter, FilterAction
+    from src.utils.config import load_filters_config
+    from sqlalchemy import select
+
+    # Ensure database is initialized
+    await init_database()
+
+    filters_config = load_filters_config()
+    filters_list = filters_config.get("filters", [])
+
+    async with get_session() as session:
+        for config in filters_list:
+            # Generate deterministic ID from name
+            filter_name = config.get("name", "")
+            filter_id = hashlib.sha256(filter_name.encode()).hexdigest()[:32]
+
+            # Check if exists
+            result = await session.execute(
+                select(Filter).where(Filter.id == filter_id)
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # Update
+                existing.name = config.get("name", existing.name)
+                existing.description = config.get("description")
+                existing.action = FilterAction(config.get("action", "include"))
+                existing.action_params = config.get("action_params", {})
+                existing.conditions = config.get("conditions", {})
+                existing.score_modifier = config.get("score_modifier", 0)
+                existing.priority = config.get("priority", 100)
+                existing.enabled = config.get("enabled", True)
+            else:
+                # Create
+                filter_obj = Filter()
+                filter_obj.id = filter_id
+                filter_obj.name = config.get("name", "Unnamed")
+                filter_obj.description = config.get("description")
+                filter_obj.action = FilterAction(config.get("action", "include"))
+                filter_obj.action_params = config.get("action_params", {})
+                filter_obj.conditions = config.get("conditions", {})
+                filter_obj.score_modifier = config.get("score_modifier", 0)
+                filter_obj.priority = config.get("priority", 100)
+                filter_obj.enabled = config.get("enabled", True)
+                session.add(filter_obj)
+
+        await session.commit()
+
+    return len(filters_list)
+
+
+async def _get_sidebar_stats():
+    """Get quick stats for the sidebar."""
+    from src.storage.database import get_session, init_database
+    from src.storage.models import Source, Item, Alert, ItemStatus
+    from sqlalchemy import select, func
+    from datetime import datetime, timedelta, timezone
+
+    await init_database()
+
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    async with get_session() as session:
+        # Active sources
+        result = await session.execute(
+            select(func.count(Source.id)).where(Source.enabled == True)
+        )
+        sources = result.scalar() or 0
+
+        # Items last 24h
+        result = await session.execute(
+            select(func.count(Item.id)).where(Item.collected_at >= cutoff_24h)
+        )
+        items_24h = result.scalar() or 0
+
+        # Alerts last 24h
+        result = await session.execute(
+            select(func.count(Alert.id)).where(Alert.created_at >= cutoff_24h)
+        )
+        alerts = result.scalar() or 0
+
+        # Unread items
+        result = await session.execute(
+            select(func.count(Item.id)).where(Item.status == ItemStatus.NEW)
+        )
+        unread = result.scalar() or 0
+
+    return {
+        "sources": sources,
+        "items_24h": items_24h,
+        "alerts": alerts,
+        "unread": unread,
+    }
+
+
+async def _update_filter_db(filter_id, name, desc, action, action_params, conditions, score_mod, priority, enabled):
+    """Update a filter in the database."""
+    from src.storage.database import get_session
+    from src.storage.models import Filter, FilterAction
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        result = await session.execute(select(Filter).where(Filter.id == filter_id))
+        f = result.scalar_one_or_none()
+        if f:
+            f.name = name
+            f.description = desc
+            f.action = FilterAction(action)
+            f.action_params = action_params
+            f.conditions = conditions
+            f.score_modifier = score_mod
+            f.priority = priority
+            f.enabled = enabled
+            await session.commit()
+
+
+async def get_all_sources():
+    """Get all sources from the database."""
+    from src.storage.database import get_session
+    from src.storage.models import Source
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        result = await session.execute(select(Source).order_by(Source.name))
+        return result.scalars().all()
+
+
+async def get_all_filters():
+    """Get all filters from the database."""
+    from src.storage.database import get_session
+    from src.storage.models import Filter
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        result = await session.execute(select(Filter).order_by(Filter.priority))
+        return result.scalars().all()
+
+
+async def get_all_alerts(severity_filter=None, date_filter=None, limit=50):
+    """Get alerts from the database."""
+    from src.storage.database import get_session
+    from src.storage.models import Alert, AlertSeverity
+    from sqlalchemy import select, and_
+    from datetime import datetime, timedelta, timezone
+
+    async with get_session() as session:
+        query = select(Alert).order_by(Alert.created_at.desc()).limit(limit)
+
+        conditions = []
+
+        if severity_filter and severity_filter != "all":
+            conditions.append(Alert.severity == AlertSeverity(severity_filter))
+
+        if date_filter:
+            now = datetime.now(timezone.utc)
+            if date_filter == "today":
+                cutoff = now - timedelta(days=1)
+            elif date_filter == "week":
+                cutoff = now - timedelta(days=7)
+            elif date_filter == "month":
+                cutoff = now - timedelta(days=30)
+            else:
+                cutoff = None
+
+            if cutoff:
+                conditions.append(Alert.created_at >= cutoff)
+
+        if conditions:
+            query = query.where(and_(*conditions))
+
+        result = await session.execute(query)
+        return result.scalars().all()
+
+
+async def get_stats(period="week"):
+    """Get statistics for the dashboard."""
+    from src.storage.database import get_session, get_database_stats
+    from src.storage.models import Item, Alert, Source, ItemStatus, AlertSeverity
+    from sqlalchemy import select, func, cast, Date
+    from datetime import datetime, timedelta, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    days_map = {"week": 7, "month": 30, "quarter": 90, "year": 365}
+    days = days_map.get(period, 7)
+    cutoff = now_utc - timedelta(days=days)
+
+    async with get_session() as session:
+        # Items count
+        result = await session.execute(
+            select(func.count(Item.id)).where(Item.collected_at >= cutoff)
+        )
+        items_count = result.scalar() or 0
+
+        # Alerts count
+        result = await session.execute(
+            select(func.count(Alert.id)).where(Alert.created_at >= cutoff)
+        )
+        alerts_count = result.scalar() or 0
+
+        # Active sources
+        result = await session.execute(
+            select(func.count(Source.id)).where(Source.enabled == True)
+        )
+        sources_count = result.scalar() or 0
+
+        # Unread items
+        result = await session.execute(
+            select(func.count(Item.id)).where(Item.status == ItemStatus.NEW)
+        )
+        unread_count = result.scalar() or 0
+
+        # Top items
+        result = await session.execute(
+            select(Item, Source.name)
+            .join(Source, Source.id == Item.source_id)
+            .where(Item.collected_at >= cutoff)
+            .order_by(Item.relevance_score.desc())
+            .limit(10)
+        )
+        top_items = result.all()
+
+        # Items by source
+        result = await session.execute(
+            select(Source.name, func.count(Item.id).label("count"))
+            .join(Item, Item.source_id == Source.id)
+            .where(Item.collected_at >= cutoff)
+            .group_by(Source.id)
+            .order_by(func.count(Item.id).desc())
+            .limit(10)
+        )
+        items_by_source = result.all()
+
+        # Items by category
+        result = await session.execute(
+            select(Source.category, func.count(Item.id).label("count"))
+            .join(Item, Item.source_id == Source.id)
+            .where(Item.collected_at >= cutoff, Source.category.isnot(None))
+            .group_by(Source.category)
+            .order_by(func.count(Item.id).desc())
+        )
+        items_by_category = result.all()
+
+        # Items per day
+        items_per_day = []
+        for i in range(days, 0, -1):
+            day_start = (now_utc - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day_start + timedelta(days=1)
+            result = await session.execute(
+                select(func.count(Item.id)).where(
+                    Item.collected_at >= day_start,
+                    Item.collected_at < day_end,
+                )
+            )
+            count = result.scalar() or 0
+            items_per_day.append({
+                "date": day_start.strftime("%d/%m"),
+                "count": count,
+            })
+
+        # Alerts by severity
+        alerts_by_severity = {}
+        for sev in AlertSeverity:
+            result = await session.execute(
+                select(func.count(Alert.id)).where(
+                    Alert.created_at >= cutoff,
+                    Alert.severity == sev,
+                )
+            )
+            alerts_by_severity[sev.value] = result.scalar() or 0
+
+        # Sources health
+        result = await session.execute(select(Source).where(Source.enabled == True))
+        all_sources = result.scalars().all()
+        sources_healthy = sum(1 for s in all_sources if s.consecutive_errors == 0)
+        sources_error = sum(1 for s in all_sources if s.consecutive_errors > 0)
+        last_collection = max((s.last_success for s in all_sources if s.last_success), default=None)
+
+        # Keywords frequency
+        result = await session.execute(
+            select(Item.keywords_json)
+            .where(Item.collected_at >= cutoff, Item.keywords_json.isnot(None))
+            .limit(500)
+        )
+        keyword_rows = result.scalars().all()
+        from collections import Counter
+        import json
+        kw_counter = Counter()
+        for kw_json in keyword_rows:
+            try:
+                kws = json.loads(kw_json)
+                if isinstance(kws, list):
+                    kw_counter.update(kws)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        top_keywords = kw_counter.most_common(20)
+
+        # DB stats
+        try:
+            db_stats = await get_database_stats()
+        except Exception:
+            db_stats = {"size_mb": 0}
+
+        return {
+            "items_count": items_count,
+            "alerts_count": alerts_count,
+            "sources_count": sources_count,
+            "unread_count": unread_count,
+            "top_items": top_items,
+            "items_by_source": items_by_source,
+            "items_by_category": items_by_category,
+            "items_per_day": items_per_day,
+            "alerts_by_severity": alerts_by_severity,
+            "sources_healthy": sources_healthy,
+            "sources_error": sources_error,
+            "last_collection": last_collection,
+            "top_keywords": top_keywords,
+            "db_size_mb": db_stats.get("size_mb", 0),
+        }
+
+
+def _parse_search_query(search: str, Item):
+    """
+    Parse a search query with operators into SQLAlchemy conditions.
+
+    Supports:
+    - "exact phrase" : exact match
+    - AND / ET       : both terms required (default between terms)
+    - OR / OU        : either term
+    - NOT / -term    : exclude term
+    """
+    import re as _re
+    from sqlalchemy import and_, or_, not_
+
+    # Extract quoted phrases first
+    phrases = _re.findall(r'"([^"]+)"', search)
+    remaining = _re.sub(r'"[^"]*"', '', search).strip()
+
+    # Split remaining by OR/OU
+    or_groups = _re.split(r'\s+(?:OR|OU)\s+', remaining, flags=_re.IGNORECASE)
+
+    all_conditions = []
+
+    for group in or_groups:
+        group_conditions = []
+
+        # Split by AND/ET or whitespace (implicit AND)
+        terms = _re.split(r'\s+(?:AND|ET)\s+|\s+', group, flags=_re.IGNORECASE)
+
+        for term in terms:
+            term = term.strip()
+            if not term:
+                continue
+
+            # NOT / - prefix
+            negate = False
+            if term.upper() in ("NOT", "NON"):
+                continue  # skip, will be handled with next term
+            if term.startswith("-"):
+                negate = True
+                term = term[1:]
+            if not term:
+                continue
+
+            pattern = f"%{term}%"
+            cond = (Item.title.ilike(pattern)) | (Item.content.ilike(pattern))
+
+            if negate:
+                cond = not_(cond)
+
+            group_conditions.append(cond)
+
+        if group_conditions:
+            all_conditions.append(and_(*group_conditions))
+
+    # Add quoted phrase conditions
+    for phrase in phrases:
+        pattern = f"%{phrase}%"
+        all_conditions.append(
+            (Item.title.ilike(pattern)) | (Item.content.ilike(pattern))
+        )
+
+    if not all_conditions:
+        return None
+
+    if len(all_conditions) == 1:
+        return all_conditions[0]
+
+    # If we had OR groups, combine with OR; otherwise AND
+    if len(or_groups) > 1 or phrases:
+        return or_(*all_conditions)
+    return and_(*all_conditions)
+
+
+async def get_feed_items(search=None, category=None, date_from=None, date_to=None, status_filter=None, source_id=None, filter_id=None, sort_by="date", limit=100):
+    """Get items for the feed page."""
+    from src.storage.database import get_session
+    from src.storage.models import Item, Source, ItemStatus
+    from sqlalchemy import select, and_
+    from datetime import datetime, timedelta, timezone
+
+    async with get_session() as session:
+        # Build query with join for source filtering
+        query = select(Item)
+
+        conditions = []
+
+        # Source filter
+        if source_id:
+            conditions.append(Item.source_id == source_id)
+
+        # Category filter (requires join)
+        if category:
+            subquery = select(Source.id).where(Source.category == category)
+            conditions.append(Item.source_id.in_(subquery))
+
+        # Filter (rule) filter - items that matched a specific filter
+        if filter_id:
+            # matched_filters_json contains a JSON array of filter IDs
+            # Use LIKE to search for the filter ID in the JSON string
+            conditions.append(Item.matched_filters_json.like(f'%"{filter_id}"%'))
+
+        # Status filter
+        if status_filter == "starred":
+            conditions.append(Item.starred == True)
+        elif status_filter == "unread":
+            conditions.append(Item.status == ItemStatus.NEW)
+        elif status_filter == "read":
+            conditions.append(Item.status == ItemStatus.READ)
+        elif status_filter == "archived":
+            conditions.append(Item.status == ItemStatus.ARCHIVED)
+
+        # Date range filter
+        if date_from:
+            dt_from = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+            conditions.append(Item.collected_at >= dt_from)
+        if date_to:
+            dt_to = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
+            conditions.append(Item.collected_at <= dt_to)
+
+        # Search filter with operators (AND, OR, NOT, "exact phrase")
+        if search:
+            import re as _re
+            search_conditions = _parse_search_query(search, Item)
+            if search_conditions is not None:
+                conditions.append(search_conditions)
+
+        if conditions:
+            query = query.where(and_(*conditions))
+
+        # Sorting
+        if sort_by == "score":
+            query = query.order_by(Item.relevance_score.desc())
+        elif sort_by == "date_asc":
+            query = query.order_by(Item.collected_at.asc())
+        else:  # date (default)
+            query = query.order_by(Item.collected_at.desc())
+
+        query = query.limit(limit)
+
+        result = await session.execute(query)
+        items = result.scalars().all()
+
+        # Get sources dict
+        source_ids = set(item.source_id for item in items)
+        sources_dict = {}
+        if source_ids:
+            result = await session.execute(
+                select(Source).where(Source.id.in_(source_ids))
+            )
+            for source in result.scalars().all():
+                sources_dict[source.id] = source
+
+        return items, sources_dict
+
+# Page configuration
+st.set_page_config(
+    page_title=APP_NAME,
+    page_icon=APP_ICON,
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+def init_session_state() -> None:
+    """Initialize session state variables."""
+    if "initialized" not in st.session_state:
+        st.session_state.initialized = True
+        st.session_state.current_page = "feed"
+        st.session_state.selected_source = None
+        st.session_state.selected_category = "all"
+        st.session_state.search_query = ""
+        st.session_state.date_filter = "all"
+        st.session_state.status_filter = "all"
+
+        # Sync sources and filters from YAML to database on first load
+        try:
+            sources_count = run_async(sync_sources_from_yaml())
+            log.info(f"Synced {sources_count} sources from YAML to database")
+        except Exception as e:
+            log.error(f"Failed to sync sources: {e}")
+
+        try:
+            filters_count = run_async(sync_filters_from_yaml())
+            log.info(f"Synced {filters_count} filters from YAML to database")
+        except Exception as e:
+            log.error(f"Failed to sync filters: {e}")
+
+
+def render_sidebar() -> str:
+    """Render the sidebar navigation with modern styled buttons."""
+    read_only = st.session_state.get("read_only", False)
+
+    if "current_page" not in st.session_state:
+        st.session_state.current_page = "feed"
+
+    # Navigation items
+    if read_only:
+        nav_items = [
+            ("feed", "📰", "Flux"),
+            ("stats", "📊", "Stats"),
+            ("docs", "📚", "Docs"),
+        ]
+    else:
+        nav_items = [
+            ("feed", "📰", "Flux"),
+            ("sources", "📡", "Sources"),
+            ("filters", "🎯", "Filtres"),
+            ("alerts", "🔔", "Alertes"),
+            ("stats", "📊", "Stats"),
+            ("settings", "⚙️", "Config"),
+            ("docs", "📚", "Docs"),
+        ]
+
+    with st.sidebar:
+        # Logo / brand - use configured app name and icon
+        st.markdown(
+            f'<div style="text-align:center;padding:0.5rem 0 0.2rem 0;">'
+            f'<span style="font-size:1.6rem;">{APP_ICON}</span><br>'
+            f'<span style="font-size:1.1rem;font-weight:700;letter-spacing:0.5px;">{APP_NAME}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        if read_only:
+            st.markdown(
+                '<div style="text-align:center;margin-bottom:0.3rem;">'
+                '<span style="background:#ffeeba;color:#856404;padding:2px 10px;'
+                'border-radius:10px;font-size:0.75rem;">🔒 Lecture seule</span></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="text-align:center;margin-bottom:0.3rem;">'
+                '<span style="background:#d4edda;color:#155724;padding:2px 10px;'
+                'border-radius:10px;font-size:0.75rem;">● En ligne</span></div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown('<div style="margin:0.4rem 0;">', unsafe_allow_html=True)
+
+        # Navigation buttons
+        for key, icon, label in nav_items:
+            is_active = st.session_state.current_page == key
+            if is_active:
+                style = (
+                    "background:linear-gradient(90deg,#4f8bf9,#3a6fd8);color:#fff;"
+                    "border:none;border-radius:8px;padding:0.5rem 0.75rem;"
+                    "font-size:0.9rem;font-weight:600;width:100%;text-align:left;"
+                    "cursor:pointer;margin-bottom:2px;display:block;"
+                    "box-shadow:0 2px 6px rgba(79,139,249,0.3);"
+                )
+            else:
+                style = (
+                    "background:transparent;color:inherit;"
+                    "border:none;border-radius:8px;padding:0.5rem 0.75rem;"
+                    "font-size:0.9rem;width:100%;text-align:left;"
+                    "cursor:pointer;margin-bottom:2px;display:block;"
+                )
+
+            # Use st.button for interactivity, styled via markdown above
+            if st.button(
+                f"{icon}  {label}",
+                key=f"nav_{key}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state.current_page = key
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Quick stats badges
+        try:
+            sidebar_stats = run_async(_get_sidebar_stats())
+        except Exception:
+            sidebar_stats = {"sources": 0, "items_24h": 0, "alerts": 0, "unread": 0}
+
+        st.markdown(
+            '<div style="display:flex;justify-content:space-around;'
+            'padding:0.6rem 0;margin-top:0.3rem;'
+            'background:rgba(128,128,128,0.06);border-radius:8px;">'
+            f'<div style="text-align:center;line-height:1.2;">'
+            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["sources"]}</div>'
+            f'<div style="font-size:0.65rem;opacity:0.6;">Sources</div></div>'
+            f'<div style="text-align:center;line-height:1.2;">'
+            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["items_24h"]}</div>'
+            f'<div style="font-size:0.65rem;opacity:0.6;">Items/24h</div></div>'
+            f'<div style="text-align:center;line-height:1.2;">'
+            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["alerts"]}</div>'
+            f'<div style="font-size:0.65rem;opacity:0.6;">Alertes</div></div>'
+            f'<div style="text-align:center;line-height:1.2;">'
+            f'<div style="font-size:1rem;font-weight:700;">{sidebar_stats["unread"]}</div>'
+            f'<div style="font-size:0.65rem;opacity:0.6;">Non lus</div></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Learning indicator
+        try:
+            from src.processors.preference_learner import get_preference_learner
+            learner = get_preference_learner()
+            summary = run_async(learner.get_preference_summary())
+            if summary.is_active:
+                st.caption(f"🧠 Apprentissage actif ({summary.total_actions} actions)")
+            else:
+                st.caption(f"📊 Apprentissage: {summary.total_actions}/{summary.min_actions_required}")
+        except Exception:
+            pass
+
+        # Login prompt in read-only mode
+        if read_only:
+            st.markdown("")
+            with st.expander("🔓 Acces complet"):
+                pw = st.text_input("Mot de passe", type="password", key="sidebar_pw")
+                if st.button("Se connecter", use_container_width=True):
+                    raw = _load_settings_yaml()
+                    stored_hash = raw.get("dashboard", {}).get("password_hash", "")
+                    if stored_hash and _check_password(pw, stored_hash):
+                        st.session_state.authenticated = True
+                        st.session_state.read_only = False
+                        st.rerun()
+                    else:
+                        st.error("Incorrect")
+
+        # Version at bottom
+        settings = get_settings()
+        st.markdown(
+            f'<div style="text-align:center;padding-top:0.5rem;opacity:0.4;font-size:0.7rem;">'
+            f'v{settings.app.version}</div>',
+            unsafe_allow_html=True,
+        )
+
+        return st.session_state.current_page
+
+
+def render_feed_page() -> None:
+    """Render the main feed page."""
+    st.header("📰 Flux d'actualités")
+
+    # Score legend (collapsible)
+    with st.expander("📊 Comprendre le score de pertinence", expanded=False):
+        st.markdown("""
+        **Plus le score est élevé, plus l'article est pertinent pour vous.**
+
+        | Score | Niveau | Signification |
+        |-------|--------|---------------|
+        | 🔴 **85-100** | Critique | Très pertinent - À lire en priorité ! |
+        | 🟠 **70-84** | Important | Pertinent - Mérite votre attention |
+        | 🟢 **50-69** | Intéressant | Correspond à vos critères de veille |
+        | 🔵 **30-49** | Normal | Contenu standard |
+        | ⚪ **0-29** | Faible | Peu pertinent - Probablement du bruit |
+
+        **Comment augmenter la pertinence d'un article ?**
+        - 🎯 **Créez des filtres** avec des mots-clés importants (score +10 à +50)
+        - ⭐ **Sources prioritaires** : mettez vos sources importantes en priorité haute
+        - ⏱️ **Fraîcheur** : les articles récents ont un bonus (jusqu'à +20)
+        """)
+
+    from datetime import date as date_type, timedelta as td
+
+    today = date_type.today()
+
+    # Load available sources for filter
+    all_sources = run_async(get_all_sources())
+    source_options = {"all": "Toutes les sources"}
+    for src in all_sources:
+        source_options[src.id] = f"{src.name}"
+
+    # Load available filters for filter selector
+    all_filters = run_async(get_all_filters())
+    filter_options = {"all": "Tous les filtres"}
+    for flt in all_filters:
+        action_icon = {
+            "alert": "🔔",
+            "highlight": "✨",
+            "tag": "🏷️",
+            "exclude": "🚫",
+            "include": "✅",
+        }.get(flt.action.value if hasattr(flt.action, "value") else flt.action, "🎯")
+        filter_options[flt.id] = f"{action_icon} {flt.name}"
+
+    # Row 1: Full-width search bar
+    search = st.text_input(
+        "🔍 Rechercher",
+        placeholder="Recherche... (AND, OR, NOT, \"phrase exacte\")",
+        label_visibility="collapsed",
+    )
+
+    # Row 2: Filters
+    col_status, col_source, col_filter, col_cat, col_sort, col_date, col_refresh = st.columns([0.9, 1.2, 1.2, 0.9, 0.7, 1.6, 0.3])
+
+    with col_status:
+        status_filter = st.selectbox(
+            "Statut",
+            options=["all", "unread", "starred", "read", "archived"],
+            format_func=lambda x: {
+                "all": "Tous",
+                "unread": "🆕 Non lus",
+                "starred": "⭐ Favoris",
+                "read": "✅ Lus",
+                "archived": "📁 Archives",
+            }.get(x, x),
+            label_visibility="collapsed",
+        )
+
+    with col_source:
+        source_filter = st.selectbox(
+            "Source",
+            options=list(source_options.keys()),
+            format_func=lambda x: source_options.get(x, x),
+            label_visibility="collapsed",
+        )
+
+    with col_filter:
+        filter_filter = st.selectbox(
+            "Filtre",
+            options=list(filter_options.keys()),
+            format_func=lambda x: filter_options.get(x, x),
+            label_visibility="collapsed",
+            help="Afficher uniquement les items qui ont matche ce filtre",
+        )
+
+    with col_cat:
+        # Get unique categories from sources
+        categories = sorted(set(s.category for s in all_sources if s.category))
+        cat_options = ["all"] + categories
+        category = st.selectbox(
+            "Catégorie",
+            options=cat_options,
+            format_func=lambda x: "Toutes cat." if x == "all" else x.capitalize(),
+            label_visibility="collapsed",
+        )
+
+    with col_sort:
+        sort_by = st.selectbox(
+            "Tri",
+            options=["score", "date", "date_asc"],
+            index=0,  # Default to score
+            format_func=lambda x: {
+                "score": "⭐ Score",
+                "date": "📅 Recent",
+                "date_asc": "📅 Ancien",
+            }.get(x, x),
+            label_visibility="collapsed",
+        )
+
+    with col_date:
+        default_range = (today - td(days=2), today)  # Default 48h
+        date_range = st.date_input(
+            "📅 Periode",
+            value=default_range,
+            max_value=today,
+            label_visibility="collapsed",
+            help="Par defaut: dernières 48h",
+        )
+
+    with col_refresh:
+        if st.button("🔄", use_container_width=True, help="Actualiser"):
+            st.rerun()
+
+    # Parse range (can be single date or tuple)
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        date_from, date_to = date_range
+    elif isinstance(date_range, (list, tuple)) and len(date_range) == 1:
+        date_from = date_range[0]
+        date_to = today
+    else:
+        date_from = date_range
+        date_to = today
+
+    st.divider()
+
+    # Load items from database
+    items, sources_dict = run_async(get_feed_items(
+        search=search if search else None,
+        category=category if category != "all" else None,
+        date_from=date_from,
+        date_to=date_to,
+        status_filter=status_filter if status_filter != "all" else None,
+        source_id=source_filter if source_filter != "all" else None,
+        filter_id=filter_filter if filter_filter != "all" else None,
+        sort_by=sort_by,
+    ))
+
+    if items:
+        st.caption(f"{len(items)} items")
+        from src.dashboard.components.feed import render_feed
+        read_only = st.session_state.get("read_only", False)
+        render_feed(items, sources_dict, show_actions=not read_only)
+    else:
+        st.info("📭 Aucun item à afficher.", icon="ℹ️")
+        with st.expander("💡 Comment démarrer", expanded=True):
+            st.markdown("""
+            1. **Ajoutez des sources** dans l'onglet 📡 Sources
+            2. **Configurez des filtres** dans l'onglet 🎯 Filtres
+            3. **Lancez la collecte** avec la commande `sentinelpi`
+            4. Les nouveaux articles apparaîtront ici automatiquement
+            """)
+
+
+# Aide contextuelle pour la configuration des sources par type
+SOURCE_CONFIG_HELP = {
+    "rss": {
+        "description": "Options pour les flux RSS/Atom",
+        "options": {
+            "max_items": "Nombre max d'items (défaut: 100)",
+            "include_content": "Inclure le contenu complet (défaut: true)",
+        },
+        "example": '{"max_items": 50}',
+    },
+    "web": {
+        "description": "Sélecteurs CSS pour le scraping web",
+        "options": {
+            "selector": "Sélecteur des conteneurs d'articles (requis)",
+            "title_selector": "Sélecteur du titre (défaut: h2, h3, .title)",
+            "link_selector": "Sélecteur du lien",
+            "content_selector": "Sélecteur du contenu",
+            "date_selector": "Sélecteur de la date",
+        },
+        "example": '{"selector": "article.post", "title_selector": "h2"}',
+    },
+    "reddit": {
+        "description": "Options pour les subreddits",
+        "options": {
+            "sort": "Tri: hot, new, top, rising (défaut: hot)",
+            "limit": "Nombre de posts, max 100 (défaut: 25)",
+        },
+        "example": '{"sort": "new", "limit": 50}',
+    },
+    "mastodon": {
+        "description": "Options pour Mastodon",
+        "options": {
+            "type": "Type: hashtag, account, timeline (défaut: hashtag)",
+            "hashtag": "Hashtag à suivre (sans #)",
+            "account_id": "ID du compte à suivre",
+        },
+        "example": '{"type": "hashtag", "hashtag": "python"}',
+    },
+    "youtube": {
+        "description": "Options pour YouTube",
+        "options": {
+            "max_items": "Nombre max de vidéos (défaut: 50)",
+        },
+        "example": '{"max_items": 20}',
+    },
+    "custom": {
+        "description": "API personnalisée avec mappings JSON",
+        "options": {
+            "method": "Méthode HTTP (défaut: GET)",
+            "headers": "Headers HTTP additionnels",
+            "items_path": "Chemin JSON vers les items",
+        },
+        "example": '{"method": "GET", "headers": {"Authorization": "Bearer xxx"}}',
+    },
+}
+
+
+def _render_source_config_help(source_type: str) -> None:
+    """Affiche l'aide contextuelle pour la configuration d'une source."""
+    help_info = SOURCE_CONFIG_HELP.get(source_type, {})
+    if help_info:
+        st.caption(f"**{help_info.get('description', '')}**")
+        for opt, desc in help_info.get("options", {}).items():
+            st.caption(f"• `{opt}`: {desc}")
+        st.caption(f"_Exemple: `{help_info.get('example', '{}')}`_")
+
+
+@st.dialog("Ajouter une source", width="large")
+def add_source_dialog():
+    """Dialog for adding a new source."""
+    col1, col2 = st.columns(2)
+
+    with col1:
+        source_type = st.selectbox(
+            "Type",
+            options=["rss", "web", "reddit", "mastodon", "youtube", "custom"],
+        )
+        name = st.text_input("Nom", placeholder="Ma nouvelle source")
+        url = st.text_input("URL", placeholder="https://...")
+        category = st.text_input("Catégorie", placeholder="tech, presse, etc.")
+
+    with col2:
+        interval = st.number_input("Intervalle (minutes)", min_value=5, max_value=1440, value=60)
+        priority = st.selectbox(
+            "Priorité",
+            options=[1, 2, 3],
+            index=1,
+            format_func=lambda x: {1: "🔴 Haute", 2: "🟡 Normale", 3: "🟢 Basse"}.get(x),
+        )
+        enabled = st.checkbox("Activée", value=True)
+        tags_str = st.text_input("Tags (virgules)", placeholder="tech, news, etc.")
+
+    # Configuration avancée avec aide contextuelle
+    with st.expander("Configuration avancée"):
+        import json as _json
+        _render_source_config_help(source_type)
+        help_info = SOURCE_CONFIG_HELP.get(source_type, {})
+        config_str = st.text_area(
+            "Configuration (JSON)",
+            value="{}",
+            height=100,
+            placeholder=help_info.get("example", '{"key": "value"}'),
+        )
+
+    st.divider()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 Enregistrer", use_container_width=True, type="primary"):
+            if name and url:
+                try:
+                    from src.storage.models import Source, SourceType
+                    import json as _json_add
+
+                    source_key = f"{name}:{url}"
+                    source_id = hashlib.sha256(source_key.encode()).hexdigest()[:32]
+
+                    # Parse tags
+                    tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+                    # Parse config
+                    try:
+                        config = _json_add.loads(config_str) if config_str.strip() else {}
+                    except _json_add.JSONDecodeError:
+                        config = {}
+                        st.warning("Configuration JSON invalide, ignore")
+
+                    new_source = Source()
+                    new_source.id = source_id
+                    new_source.name = name
+                    new_source.type = SourceType(source_type)
+                    new_source.url = url
+                    new_source.category = category if category else None
+                    new_source.interval_minutes = interval
+                    new_source.priority = priority
+                    new_source.enabled = enabled
+                    new_source.tags = tags
+                    new_source.config = config
+
+                    run_async(add_to_db(new_source))
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+            else:
+                st.warning("Nom et URL requis")
+    with col2:
+        if st.button("❌ Annuler", use_container_width=True):
+            st.rerun()
+
+
+@st.dialog("Modifier la source", width="large")
+def edit_source_dialog(source):
+    """Dialog for editing an existing source."""
+    from src.dashboard.components.sources import _update_source, _run_async
+
+    source_type = source.type.value if hasattr(source.type, "value") else source.type
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.text_input("Type", value=source_type.upper(), disabled=True)
+        name = st.text_input("Nom", value=source.name, key="edit_src_name")
+        url = st.text_input("URL", value=source.url, key="edit_src_url")
+        category = st.text_input(
+            "Catégorie",
+            value=source.category or "",
+            placeholder="tech, presse, etc.",
+            key="edit_src_cat",
+        )
+
+    with col2:
+        interval = st.number_input(
+            "Intervalle (minutes)",
+            min_value=5,
+            max_value=1440,
+            value=source.interval_minutes,
+            key="edit_src_interval",
+        )
+        priority = st.selectbox(
+            "Priorité",
+            options=[1, 2, 3],
+            index=source.priority - 1,
+            format_func=lambda x: {1: "🔴 Haute", 2: "🟡 Normale", 3: "🟢 Basse"}.get(x),
+            key="edit_src_priority",
+        )
+        enabled = st.checkbox("Activée", value=source.enabled, key="edit_src_enabled")
+        tags_str = st.text_input(
+            "Tags (virgules)",
+            value=", ".join(source.tags) if source.tags else "",
+            key="edit_src_tags",
+        )
+
+    # Configuration avancée avec aide contextuelle
+    with st.expander("Configuration avancée"):
+        import json
+        _render_source_config_help(source_type)
+        help_info = SOURCE_CONFIG_HELP.get(source_type, {})
+        config_str = st.text_area(
+            "Configuration (JSON)",
+            value=json.dumps(source.config, indent=2, ensure_ascii=False) if source.config else "{}",
+            height=150,
+            key="edit_src_config",
+            placeholder=help_info.get("example", '{"key": "value"}'),
+        )
+
+    st.divider()
+
+    # Info sur la source
+    col_info1, col_info2, col_info3 = st.columns(3)
+    with col_info1:
+        if source.last_check:
+            from src.utils.dates import format_relative
+            st.caption(f"Dernier check : {format_relative(source.last_check)}")
+        else:
+            st.caption("Dernier check : jamais")
+    with col_info2:
+        st.caption(f"Erreurs consécutives : {source.consecutive_errors}")
+    with col_info3:
+        st.caption(f"ID : {source.id[:8]}...")
+
+    st.divider()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 Sauvegarder", use_container_width=True, type="primary"):
+            if name and url:
+                try:
+                    import json as _json
+                    # Parse tags
+                    tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+                    # Parse config
+                    try:
+                        config = _json.loads(config_str) if config_str.strip() else {}
+                    except _json.JSONDecodeError:
+                        st.error("Configuration JSON invalide")
+                        return
+
+                    success = _run_async(_update_source(
+                        source_id=source.id,
+                        name=name,
+                        url=url,
+                        category=category if category else None,
+                        interval_minutes=interval,
+                        priority=priority,
+                        enabled=enabled,
+                        tags=tags,
+                        config=config,
+                    ))
+
+                    if success:
+                        st.success("Source mise à jour !")
+                        st.rerun()
+                    else:
+                        st.error("Erreur lors de la mise à jour")
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
+            else:
+                st.warning("Nom et URL requis")
+    with col2:
+        if st.button("❌ Annuler", use_container_width=True):
+            st.rerun()
+
+
+def render_sources_page() -> None:
+    """Render the sources management page."""
+    st.header("📡 Gestion des sources")
+
+    # Load sources from database
+    sources = run_async(get_all_sources())
+
+    # Action buttons
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1.2, 1.2, 2])
+    with col1:
+        if st.button("➕ Ajouter", use_container_width=True):
+            add_source_dialog()
+    with col2:
+        if st.button("🔄 Rafraichir", use_container_width=True):
+            st.rerun()
+    with col3:
+        if st.button("📥 Collecter tout", use_container_width=True, help="Lancer la collecte sur toutes les sources actives"):
+            with st.spinner("Collecte en cours..."):
+                result = run_async(run_collection_now())
+                if result["success"]:
+                    st.success(result["message"])
+                    if result.get("errors"):
+                        for err in result["errors"]:
+                            st.warning(err)
+                else:
+                    st.error(result["message"])
+    with col4:
+        with st.popover("📤 OPML", use_container_width=True):
+            st.markdown("**Import/Export OPML**")
+            st.caption("Format standard pour echanger des flux RSS")
+
+            # Export
+            st.markdown("---")
+            st.markdown("**Exporter**")
+            export_name = st.text_input("Nom du fichier", value="sentinelpi_feeds", key="opml_export_name")
+            group_by_cat = st.checkbox("Grouper par categorie", value=True, key="opml_group")
+
+            if st.button("📥 Exporter OPML", use_container_width=True, key="opml_export_btn"):
+                from src.utils.opml import export_database_to_opml
+                from src.utils.config import PROJECT_ROOT
+                export_path = PROJECT_ROOT / "data" / f"{export_name}.opml"
+                result = run_async(export_database_to_opml(
+                    file_path=export_path,
+                    group_by_category=group_by_cat,
+                ))
+                if result["total"] > 0:
+                    st.success(f"Exporte {result['total']} sources vers {result['file_path']}")
+                else:
+                    st.warning("Aucune source RSS a exporter")
+
+            # Import
+            st.markdown("---")
+            st.markdown("**Importer**")
+            uploaded_file = st.file_uploader("Fichier OPML", type=["opml", "xml"], key="opml_upload")
+            import_enabled = st.checkbox("Activer les sources importees", value=True, key="opml_import_enabled")
+            skip_dups = st.checkbox("Ignorer les doublons", value=True, key="opml_skip_dups")
+
+            if uploaded_file is not None:
+                if st.button("📤 Importer OPML", use_container_width=True, key="opml_import_btn"):
+                    import tempfile
+                    from src.utils.opml import import_opml_to_database
+
+                    # Save uploaded file temporarily
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".opml") as tmp:
+                        tmp.write(uploaded_file.getvalue())
+                        tmp_path = tmp.name
+
+                    try:
+                        result = run_async(import_opml_to_database(
+                            file_path=tmp_path,
+                            enabled=import_enabled,
+                            skip_duplicates=skip_dups,
+                        ))
+                        st.success(f"Importe: {result['imported']} | Ignores: {result['skipped']}")
+                        if result['errors']:
+                            for err in result['errors'][:5]:
+                                st.warning(err)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erreur: {e}")
+                    finally:
+                        import os
+                        os.unlink(tmp_path)
+
+    st.divider()
+
+    if sources:
+        from src.dashboard.components.sources import (
+            get_source_type_icon, get_status_badge,
+            _run_async as _src_async, _toggle_source, _test_source, _delete_source,
+        )
+
+        # Stats summary
+        active_count = sum(1 for s in sources if s.enabled)
+        error_count = sum(1 for s in sources if s.consecutive_errors > 0)
+        st.caption(f"📊 {len(sources)} sources ({active_count} actives, {error_count} en erreur)")
+
+        # Table header
+        h_type, h_name, h_cat, h_int, h_status, h_last, h_action = st.columns([0.4, 2.5, 0.8, 0.6, 0.9, 0.9, 1.2])
+        with h_type:
+            st.markdown("**Type**")
+        with h_name:
+            st.markdown("**Nom / URL**")
+        with h_cat:
+            st.markdown("**Cat.**")
+        with h_int:
+            st.markdown("**Interv.**")
+        with h_status:
+            st.markdown("**Statut**")
+        with h_last:
+            st.markdown("**Dernier**")
+        with h_action:
+            st.markdown("**Action**")
+
+        st.markdown("---")
+
+        for s in sources:
+            stype = s.type.value if hasattr(s.type, "value") else s.type
+            icon = get_source_type_icon(stype)
+            status = get_status_badge(s)
+
+            last = "-"
+            if s.last_check:
+                from src.utils.dates import format_relative
+                last = format_relative(s.last_check) if hasattr(s.last_check, "timestamp") else str(s.last_check)
+
+            c_type, c_name, c_cat, c_int, c_status, c_last, c_action = st.columns([0.4, 2.5, 0.8, 0.6, 0.9, 0.9, 1.2])
+
+            with c_type:
+                st.markdown(icon)
+            with c_name:
+                status_icon = "✅" if s.enabled else "⏸️"
+                st.markdown(f"{status_icon} **{s.name}**")
+                short_url = s.url[:40] + "..." if len(s.url) > 40 else s.url
+                st.caption(short_url)
+            with c_cat:
+                st.caption(s.category or "-")
+            with c_int:
+                st.caption(f"{s.interval_minutes}m")
+            with c_status:
+                st.caption(status)
+            with c_last:
+                st.caption(last)
+            with c_action:
+                action_options = {
+                    "none": "Actions ▾",
+                    "edit": "✏️ Modifier",
+                    "toggle": "⏸️ Pause" if s.enabled else "▶️ Activer",
+                    "test": "🔄 Tester",
+                    "collect": "📥 Collecter",
+                    "delete": "🗑️ Supprimer",
+                }
+                selected = st.selectbox(
+                    "Action",
+                    options=list(action_options.keys()),
+                    format_func=lambda x: action_options.get(x, x),
+                    key=f"saction_{s.id}",
+                    label_visibility="collapsed",
+                )
+
+                if selected != "none":
+                    if selected == "edit":
+                        edit_source_dialog(s)
+                    elif selected == "toggle":
+                        _src_async(_toggle_source(s.id, s.enabled))
+                        st.rerun()
+                    elif selected == "test":
+                        with st.spinner("Test..."):
+                            success, msg = _src_async(_test_source(s.id))
+                            if success:
+                                st.toast(f"✅ {s.name}: {msg}")
+                            else:
+                                st.toast(f"❌ {s.name}: {msg}")
+                    elif selected == "collect":
+                        with st.spinner("Collecte..."):
+                            result = run_async(run_collection_now(s.id))
+                            if result["success"]:
+                                st.toast(result["message"])
+                            else:
+                                st.error(result["message"])
+                    elif selected == "delete":
+                        st.session_state[f"confirm_delete_{s.id}"] = True
+
+            # Delete confirmation row
+            if st.session_state.get(f"confirm_delete_{s.id}"):
+                st.warning(f"⚠️ Supprimer **{s.name}** et tous ses items ?")
+                col_yes, col_no, _ = st.columns([1, 1, 4])
+                with col_yes:
+                    if st.button("✅ Confirmer", key=f"yes_del_{s.id}", type="primary"):
+                        if _src_async(_delete_source(s.id)):
+                            st.toast(f"Source '{s.name}' supprimée")
+                            del st.session_state[f"confirm_delete_{s.id}"]
+                            st.rerun()
+                with col_no:
+                    if st.button("❌ Annuler", key=f"no_del_{s.id}"):
+                        del st.session_state[f"confirm_delete_{s.id}"]
+                        st.rerun()
+    else:
+        st.info("Aucune source configurée.")
+
+
+def _render_condition_editor(prefix: str, cond_type: str = "keywords", field: str = "all",
+                             operator: str = "contains", value_text: str = "",
+                             case_sensitive: bool = False, logic: str = "and",
+                             sub_cond_text: str = ""):
+    """Shared condition editor UI. Returns a conditions dict."""
+    ct = st.selectbox("Type de condition", options=["keywords", "regex", "compound"],
+        index=["keywords", "regex", "compound"].index(cond_type), key=f"{prefix}_ctype")
+    cf = st.selectbox("Champ", options=["all", "title", "content", "author", "url"],
+        index=["all", "title", "content", "author", "url"].index(field), key=f"{prefix}_field")
+
+    if ct == "keywords":
+        op = st.selectbox("Operateur", options=["contains", "not_contains", "starts_with", "ends_with", "equals"],
+            index=["contains", "not_contains", "starts_with", "ends_with", "equals"].index(operator) if operator in ["contains", "not_contains", "starts_with", "ends_with", "equals"] else 0,
+            key=f"{prefix}_op")
+        val = st.text_area("Mots-cles (un par ligne ou virgules)", value=value_text, height=100, key=f"{prefix}_kw")
+        cs = st.checkbox("Sensible a la casse", value=case_sensitive, key=f"{prefix}_cs")
+        kw_list = [k.strip() for line in val.split("\n") for k in line.split(",") if k.strip()]
+        return {"type": "keywords", "field": cf, "operator": op, "case_sensitive": cs, "value": kw_list}, val
+    elif ct == "regex":
+        pattern = st.text_input("Expression reguliere", value=value_text, key=f"{prefix}_regex")
+        cs = st.checkbox("Sensible a la casse", value=case_sensitive, key=f"{prefix}_cs")
+        return {"type": "regex", "field": cf, "operator": "matches", "case_sensitive": cs, "value": pattern}, pattern
+    else:  # compound
+        lg = st.selectbox("Logique", options=["and", "or"],
+            index=["and", "or"].index(logic), key=f"{prefix}_logic")
+        st.caption("Sous-conditions au format JSON (liste)")
+        sub = st.text_area("Sous-conditions", value=sub_cond_text,
+            placeholder='[{"type":"keywords","field":"title","operator":"contains","value":["mot1"]},\n {"type":"regex","field":"content","operator":"matches","value":"pattern"}]',
+            height=120, key=f"{prefix}_sub")
+        import json as _json
+        try:
+            sub_list = _json.loads(sub) if sub.strip() else []
+        except _json.JSONDecodeError:
+            sub_list = []
+            st.warning("JSON invalide pour les sous-conditions")
+        return {"type": "compound", "logic": lg, "conditions": sub_list}, sub
+
+
+@st.dialog("Nouveau filtre")
+def add_filter_dialog():
+    """Dialog for adding a new filter."""
+    col1, col2 = st.columns(2)
+    with col1:
+        nf_name = st.text_input("Nom", placeholder="Mon filtre")
+        nf_desc = st.text_input("Description", placeholder="Ce filtre...")
+        nf_action = st.selectbox("Action", options=["alert", "highlight", "tag", "exclude", "include"])
+    with col2:
+        nf_score = st.number_input("Modificateur score", value=0, step=5)
+        nf_priority = st.number_input("Priorite", value=50, min_value=1)
+
+    st.divider()
+
+    # Targeting
+    with st.expander("Ciblage (optionnel)"):
+        nf_categories = st.text_input("Categories (virgules)", placeholder="tech, presse", key="nf_cats")
+        nf_source_ids = st.text_input("IDs sources (virgules)", placeholder="id1, id2", key="nf_sids")
+
+    # Condition editor
+    st.subheader("Condition")
+    new_cond, _ = _render_condition_editor("nf")
+
+    # Action params
+    nf_ap = {}
+    if nf_action == "alert":
+        nf_severity = st.selectbox("Severite alerte", options=["info", "notice", "warning", "critical"], index=1)
+        nf_ap["severity"] = nf_severity
+    elif nf_action == "tag":
+        nf_tag = st.text_input("Nom du tag", placeholder="mon-tag")
+        nf_ap["tag"] = nf_tag
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("💾 Enregistrer", use_container_width=True, type="primary"):
+            has_value = bool(new_cond.get("value")) or bool(new_cond.get("conditions"))
+            if nf_name and has_value:
+                from src.storage.models import Filter, FilterAction
+                flt = Filter()
+                flt.id = hashlib.sha256(nf_name.encode()).hexdigest()[:32]
+                flt.name = nf_name
+                flt.description = nf_desc or None
+                flt.action = FilterAction(nf_action)
+                flt.action_params = nf_ap
+                flt.conditions = new_cond
+                flt.score_modifier = nf_score
+                flt.priority = nf_priority
+                flt.enabled = True
+                # Targeting
+                cats = [c.strip() for c in nf_categories.split(",") if c.strip()] if nf_categories else None
+                sids = [s.strip() for s in nf_source_ids.split(",") if s.strip()] if nf_source_ids else None
+                if cats:
+                    flt.categories = cats
+                if sids:
+                    flt.source_ids = sids
+
+                run_async(add_to_db(flt))
+                st.rerun()
+            else:
+                st.warning("Nom et au moins une condition requis")
+    with c2:
+        if st.button("❌ Annuler", use_container_width=True):
+            st.rerun()
+
+
+@st.dialog("Modifier le filtre")
+def edit_filter_dialog(filter_obj):
+    """Dialog for editing an existing filter."""
+    import json as _json
+    action_val = filter_obj.action.value if hasattr(filter_obj.action, "value") else filter_obj.action
+    cond = filter_obj.conditions or {}
+    cond_type = cond.get("type", "keywords")
+    cond_field = cond.get("field", "all")
+    cond_operator = cond.get("operator", "contains")
+    cond_cs = cond.get("case_sensitive", False)
+    cond_value = cond.get("value", [])
+    cond_logic = cond.get("logic", "and")
+
+    # Prepare value text based on condition type
+    if cond_type == "keywords" and isinstance(cond_value, list):
+        value_text = "\n".join(cond_value)
+    elif cond_type == "regex":
+        value_text = str(cond_value)
+    elif cond_type == "compound":
+        value_text = ""
+    else:
+        value_text = str(cond_value) if cond_value else ""
+
+    sub_cond_text = ""
+    if cond_type == "compound":
+        sub_cond_text = _json.dumps(cond.get("conditions", []), indent=2, ensure_ascii=False)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        ef_name = st.text_input("Nom", value=filter_obj.name)
+        ef_desc = st.text_input("Description", value=filter_obj.description or "")
+        ef_action = st.selectbox(
+            "Action",
+            options=["alert", "highlight", "tag", "exclude", "include"],
+            index=["alert", "highlight", "tag", "exclude", "include"].index(action_val) if action_val in ["alert", "highlight", "tag", "exclude", "include"] else 0,
+        )
+    with col2:
+        ef_score = st.number_input("Modificateur score", value=int(filter_obj.score_modifier), step=5)
+        ef_priority = st.number_input("Priorite", value=filter_obj.priority, min_value=1)
+        ef_enabled = st.checkbox("Actif", value=filter_obj.enabled)
+
+    st.divider()
+
+    # Targeting
+    with st.expander("Ciblage (optionnel)"):
+        existing_cats = ", ".join(filter_obj.categories) if filter_obj.categories else ""
+        existing_sids = ", ".join(filter_obj.source_ids) if filter_obj.source_ids else ""
+        ef_categories = st.text_input("Categories (virgules)", value=existing_cats, key="ef_cats")
+        ef_source_ids = st.text_input("IDs sources (virgules)", value=existing_sids, key="ef_sids")
+
+    # Condition editor
+    st.subheader("Condition")
+    new_cond, _ = _render_condition_editor("ef", cond_type, cond_field, cond_operator,
+                                            value_text, cond_cs, cond_logic, sub_cond_text)
+
+    # Action params
+    ap = filter_obj.action_params or {}
+    ef_severity = None
+    ef_tag = None
+    if ef_action == "alert":
+        ef_severity = st.selectbox("Severite alerte", options=["info", "notice", "warning", "critical"],
+            index=["info", "notice", "warning", "critical"].index(ap.get("severity", "notice")))
+    elif ef_action == "tag":
+        ef_tag = st.text_input("Tag", value=ap.get("tag", ""))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("💾 Sauvegarder", use_container_width=True, type="primary"):
+            new_ap = {}
+            if ef_action == "alert" and ef_severity:
+                new_ap["severity"] = ef_severity
+            elif ef_action == "tag" and ef_tag:
+                new_ap["tag"] = ef_tag
+
+            # Targeting
+            cats = [c.strip() for c in ef_categories.split(",") if c.strip()] if ef_categories else None
+            sids = [s.strip() for s in ef_source_ids.split(",") if s.strip()] if ef_source_ids else None
+
+            run_async(_update_filter_db(
+                filter_obj.id, ef_name, ef_desc, ef_action,
+                new_ap, new_cond, ef_score, ef_priority, ef_enabled
+            ))
+            # Update targeting separately
+            async def _update_targeting():
+                from src.storage.database import get_session
+                from src.storage.models import Filter
+                from sqlalchemy import select
+                async with get_session() as session:
+                    result = await session.execute(select(Filter).where(Filter.id == filter_obj.id))
+                    f = result.scalar_one_or_none()
+                    if f:
+                        f.categories = cats
+                        f.source_ids = sids
+                        await session.commit()
+            run_async(_update_targeting())
+            st.rerun()
+    with c2:
+        if st.button("❌ Annuler", use_container_width=True):
+            st.rerun()
+
+
+def render_filters_page() -> None:
+    """Render the filters configuration page."""
+    st.header("🎯 Configuration des filtres")
+
+    # Load filters from database
+    filters = run_async(get_all_filters())
+
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        if st.button("➕ Nouveau filtre", use_container_width=True):
+            add_filter_dialog()
+
+    st.divider()
+
+    if filters:
+        from src.dashboard.components.filters import (
+            get_action_badge, _format_conditions_summary,
+            _run_async as _flt_async, _toggle_filter, _delete_filter,
+        )
+
+        # Stats summary
+        active_count = sum(1 for f in filters if f.enabled)
+        st.caption(f"📊 {len(filters)} filtres ({active_count} actifs)")
+
+        # Table header
+        h_on, h_name, h_act, h_cond, h_score, h_pri, h_action = st.columns([0.3, 1.5, 0.8, 2.5, 0.5, 0.4, 1.2])
+        with h_on:
+            st.markdown("**On**")
+        with h_name:
+            st.markdown("**Nom**")
+        with h_act:
+            st.markdown("**Action**")
+        with h_cond:
+            st.markdown("**Conditions**")
+        with h_score:
+            st.markdown("**Score**")
+        with h_pri:
+            st.markdown("**Prio**")
+        with h_action:
+            st.markdown("**Action**")
+
+        st.markdown("---")
+
+        for f in filters:
+            action_val = f.action.value if hasattr(f.action, "value") else f.action
+            badge = get_action_badge(action_val)
+            cond_summary = _format_conditions_summary(f.conditions or {})
+            score_str = f"{f.score_modifier:+}" if f.score_modifier else "0"
+            status_icon = "✅" if f.enabled else "⏸️"
+
+            c_on, c_name, c_act, c_cond, c_score, c_pri, c_action = st.columns([0.3, 1.5, 0.8, 2.5, 0.5, 0.4, 1.2])
+
+            with c_on:
+                st.markdown(status_icon)
+            with c_name:
+                st.markdown(f"**{f.name}**")
+                if f.description:
+                    st.caption(f.description[:40])
+            with c_act:
+                st.caption(badge)
+            with c_cond:
+                st.caption(cond_summary[:60] if cond_summary else "-")
+            with c_score:
+                st.caption(score_str)
+            with c_pri:
+                st.caption(str(f.priority))
+            with c_action:
+                action_options = {
+                    "none": "Actions ▾",
+                    "edit": "✏️ Modifier",
+                    "toggle": "⏸️ Pause" if f.enabled else "▶️ Activer",
+                    "delete": "🗑️ Supprimer",
+                }
+                selected = st.selectbox(
+                    "Action",
+                    options=list(action_options.keys()),
+                    format_func=lambda x: action_options.get(x, x),
+                    key=f"faction_{f.id}",
+                    label_visibility="collapsed",
+                )
+
+                if selected != "none":
+                    if selected == "edit":
+                        edit_filter_dialog(f)
+                    elif selected == "toggle":
+                        _flt_async(_toggle_filter(f.id, f.enabled))
+                        st.rerun()
+                    elif selected == "delete":
+                        _flt_async(_delete_filter(f.id))
+                        st.rerun()
+
+    else:
+        st.info("Aucun filtre configure.")
+
+
+def render_alerts_page() -> None:
+    """Render the alerts history page."""
+    st.header("🔔 Historique des alertes")
+
+    # Filters
+    col1, col2, col3 = st.columns([2, 2, 2])
+
+    with col1:
+        severity = st.selectbox(
+            "Sévérité",
+            options=["all", "critical", "warning", "notice", "info"],
+            format_func=lambda x: {
+                "all": "Toutes",
+                "critical": "🚨 Critique",
+                "warning": "⚠️ Attention",
+                "notice": "📢 Notice",
+                "info": "ℹ️ Info",
+            }.get(x, x),
+        )
+
+    with col2:
+        date_range = st.selectbox(
+            "Période",
+            options=["today", "week", "month", "all"],
+            format_func=lambda x: {
+                "today": "Aujourd'hui",
+                "week": "Cette semaine",
+                "month": "Ce mois",
+                "all": "Tout",
+            }.get(x, x),
+        )
+
+    with col3:
+        if st.button("🔄 Actualiser", use_container_width=True):
+            st.rerun()
+
+    st.divider()
+
+    # Load alerts
+    alerts = run_async(get_all_alerts(
+        severity_filter=severity if severity != "all" else None,
+        date_filter=date_range if date_range != "all" else None,
+    ))
+
+    if alerts:
+        st.caption(f"{len(alerts)} alertes")
+        from src.dashboard.components.alerts import render_alert_card
+        for alert in alerts:
+            render_alert_card(alert, show_actions=True)
+    else:
+        st.info("📭 Aucune alerte enregistrée.", icon="ℹ️")
+
+
+def _stat_card(label: str, value: str, icon: str, color: str = "#4f8bf9") -> str:
+    """Generate HTML for a styled stat card."""
+    return (
+        f'<div style="background:linear-gradient(135deg,{color}22,{color}08);'
+        f'border-left:3px solid {color};border-radius:8px;padding:1rem 1.2rem;'
+        f'margin-bottom:0.5rem;">'
+        f'<div style="font-size:0.78rem;opacity:0.7;margin-bottom:0.2rem;">{icon} {label}</div>'
+        f'<div style="font-size:1.6rem;font-weight:700;color:{color};">{value}</div>'
+        f'</div>'
+    )
+
+
+def render_stats_page() -> None:
+    """Render the statistics page."""
+    import plotly.graph_objects as go
+
+    # Tab selector for basic vs advanced stats
+    stats_mode = st.radio(
+        "Mode",
+        options=["basic", "advanced"],
+        format_func=lambda x: {"basic": "📊 Statistiques", "advanced": "📈 Avancees"}.get(x, x),
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if stats_mode == "advanced":
+        # Render advanced statistics page
+        from src.dashboard.components.statistics import render_statistics_page
+        render_statistics_page(run_async)
+        return
+
+    st.header("📊 Statistiques")
+
+    # Period selector
+    period = st.radio(
+        "Periode",
+        options=["week", "month", "quarter"],
+        format_func=lambda x: {"week": "7 jours", "month": "30 jours", "quarter": "90 jours"}.get(x, x),
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    stats = run_async(get_stats(period))
+
+    # Metric cards row
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(_stat_card("Items collectés", f"{stats['items_count']:,}", "📰", "#4f8bf9"), unsafe_allow_html=True)
+    with c2:
+        st.markdown(_stat_card("Non lus", str(stats["unread_count"]), "📭", "#f59e0b"), unsafe_allow_html=True)
+    with c3:
+        st.markdown(_stat_card("Alertes", str(stats["alerts_count"]), "🔔", "#ef4444"), unsafe_allow_html=True)
+    with c4:
+        health_txt = f"{stats['sources_healthy']} OK"
+        if stats["sources_error"] > 0:
+            health_txt += f" · {stats['sources_error']} err"
+        st.markdown(_stat_card("Sources", health_txt, "📡", "#10b981"), unsafe_allow_html=True)
+
+    st.markdown("")
+
+    palette = ["#4f8bf9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6",
+               "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"]
+
+    # Two columns: pie charts + word cloud / top items
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        # Donut chart: items by source
+        st.markdown("**Repartition par source**")
+        if stats["items_by_source"]:
+            labels = [row[0] for row in stats["items_by_source"]]
+            values = [row[1] for row in stats["items_by_source"]]
+            fig = go.Figure(data=[go.Pie(
+                labels=labels, values=values,
+                hole=0.45,
+                marker=dict(colors=palette[:len(labels)]),
+                textinfo="label+percent",
+                textposition="outside",
+                textfont_size=11,
+                hoverinfo="label+value+percent",
+            )])
+            fig.update_layout(
+                showlegend=False,
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=280,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("Aucune donnee.")
+
+        # Donut chart: items by category
+        st.markdown("**Repartition par categorie**")
+        if stats["items_by_category"]:
+            cat_labels = [row[0] or "Sans categorie" for row in stats["items_by_category"]]
+            cat_values = [row[1] for row in stats["items_by_category"]]
+            fig2 = go.Figure(data=[go.Pie(
+                labels=cat_labels, values=cat_values,
+                hole=0.45,
+                marker=dict(colors=palette[2:2 + len(cat_labels)]),
+                textinfo="label+percent",
+                textposition="outside",
+                textfont_size=11,
+                hoverinfo="label+value+percent",
+            )])
+            fig2.update_layout(
+                showlegend=False,
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=250,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.caption("Aucune donnee.")
+
+        # Donut chart: alerts by severity
+        st.markdown("**Alertes par severite**")
+        severity_data = stats["alerts_by_severity"]
+        if any(v > 0 for v in severity_data.values()):
+            sev_labels = [k.capitalize() for k, v in severity_data.items() if v > 0]
+            sev_values = [v for v in severity_data.values() if v > 0]
+            sev_colors = {"Critical": "#ef4444", "Warning": "#f59e0b", "Notice": "#4f8bf9", "Info": "#9ca3af"}
+            sev_c = [sev_colors.get(l, "#ccc") for l in sev_labels]
+            fig3 = go.Figure(data=[go.Pie(
+                labels=sev_labels, values=sev_values,
+                hole=0.45,
+                marker=dict(colors=sev_c),
+                textinfo="label+value",
+                textposition="inside",
+                textfont_size=12,
+                hoverinfo="label+value+percent",
+            )])
+            fig3.update_layout(
+                showlegend=False,
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=220,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.caption("Aucune alerte.")
+
+    with col_right:
+        # Word cloud (HTML-based)
+        st.markdown("**Nuage de mots-cles**")
+        if stats["top_keywords"]:
+            max_count = stats["top_keywords"][0][1] if stats["top_keywords"] else 1
+            min_size = 0.8
+            max_size = 2.8
+            cloud_html = '<div style="text-align:center;line-height:2.4;padding:1rem 0.5rem;">'
+            for i, (word, count) in enumerate(stats["top_keywords"][:20]):
+                ratio = count / max_count if max_count > 0 else 0
+                size = min_size + (max_size - min_size) * ratio
+                color = palette[i % len(palette)]
+                weight = 400 + int(400 * ratio)
+                cloud_html += (
+                    f'<span style="display:inline-block;margin:4px 8px;'
+                    f'font-size:{size:.2f}rem;font-weight:{weight};'
+                    f'color:{color};cursor:default;" '
+                    f'title="{word}: {count} occurrences">'
+                    f'{word}</span>'
+                )
+            cloud_html += '</div>'
+            st.markdown(cloud_html, unsafe_allow_html=True)
+        else:
+            st.caption("Aucun mot-cle.")
+
+        st.markdown("")
+
+        # Top articles
+        st.markdown("**Top articles**")
+        if stats["top_items"]:
+            for i, (item, source_name) in enumerate(stats["top_items"][:8], 1):
+                score = item.relevance_score
+                bar_color = "#10b981" if score > 70 else "#f59e0b" if score > 40 else "#9ca3af"
+                title = item.title[:55] + "..." if len(item.title) > 55 else item.title
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+                    f'<span style="background:{bar_color};color:#fff;padding:1px 6px;'
+                    f'border-radius:4px;font-size:0.75rem;font-weight:600;min-width:28px;'
+                    f'text-align:center;">{score:.0f}</span>'
+                    f'<span style="font-size:0.85rem;line-height:1.3;">{i}. {title}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"   {source_name}")
+        else:
+            st.caption("Aucun item.")
+
+    # Footer: system info
+    st.markdown("")
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        if stats["last_collection"]:
+            from src.utils.dates import format_relative
+            st.caption(f"Derniere collecte : {format_relative(stats['last_collection'])}")
+        else:
+            st.caption("Aucune collecte")
+    with fc2:
+        st.caption(f"Base : {stats['db_size_mb']:.1f} MB")
+    with fc3:
+        st.caption(f"{stats['sources_count']} source(s) active(s)")
+
+
+def _save_settings_yaml(data: dict) -> None:
+    """Save settings dict to YAML file."""
+    import yaml
+    from src.utils.config import PROJECT_ROOT
+    settings_path = PROJECT_ROOT / "config" / "settings.yaml"
+    with open(settings_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def _load_settings_yaml() -> dict:
+    """Load raw settings dict from YAML."""
+    import yaml
+    from src.utils.config import PROJECT_ROOT
+    settings_path = PROJECT_ROOT / "config" / "settings.yaml"
+    with open(settings_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _load_alerts_yaml() -> dict:
+    """Load raw alerts config dict from YAML."""
+    import yaml
+    from src.utils.config import PROJECT_ROOT
+    alerts_path = PROJECT_ROOT / "config" / "alerts.yaml"
+    try:
+        with open(alerts_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
+
+
+def _save_alerts_yaml(data: dict) -> None:
+    """Save alerts config dict to YAML file."""
+    import yaml
+    from src.utils.config import PROJECT_ROOT
+    alerts_path = PROJECT_ROOT / "config" / "alerts.yaml"
+    with open(alerts_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def render_settings_page() -> None:
+    """Render the settings page with editable fields."""
+    st.header("⚙️ Parametres")
+
+    raw = _load_settings_yaml()
+
+    tabs = st.tabs(["🔧 General", "📡 Collecte", "🔔 Alertes", "🧠 Preferences", "🗄️ Base de donnees", "📋 Logs", "🛠 Maintenance", "🔒 Securite"])
+
+    with tabs[0]:
+        with st.form("settings_general"):
+            col1, col2 = st.columns(2)
+            with col1:
+                app_name = st.text_input("Nom de l'application", value=raw.get("app", {}).get("name", "SentinelPi"))
+                app_icon = st.text_input("Icone (emoji)", value=raw.get("app", {}).get("icon", "🛡️"),
+                    help="Emoji affiché dans la navbar et l'onglet du navigateur")
+                app_tz = st.text_input("Fuseau horaire", value=raw.get("app", {}).get("timezone", "Europe/Paris"))
+            with col2:
+                app_version = st.text_input("Version", value=raw.get("app", {}).get("version", "1.0.0"))
+                log_level = st.selectbox(
+                    "Niveau de log",
+                    options=["DEBUG", "INFO", "WARNING", "ERROR"],
+                    index=["DEBUG", "INFO", "WARNING", "ERROR"].index(
+                        raw.get("logging", {}).get("level", "INFO")
+                    ),
+                )
+                st.caption(f"Apercu: {app_icon} {app_name}")
+            if st.form_submit_button("💾 Sauvegarder General", use_container_width=True):
+                new_config = dict(raw)
+                new_config["app"] = {"name": app_name, "icon": app_icon, "version": app_version, "timezone": app_tz}
+                new_config.setdefault("logging", {})["level"] = log_level
+                try:
+                    _save_settings_yaml(new_config)
+                    st.success("Parametres generaux sauvegardes ! Rechargez la page pour voir les changements.")
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+
+    with tabs[1]:
+        import json as _json_coll
+
+        # Default browser-like headers
+        DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        DEFAULT_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+        DEFAULT_ACCEPT_LANG = "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"
+
+        with st.form("settings_collection"):
+            col1, col2 = st.columns(2)
+            coll = raw.get("collection", {})
+            with col1:
+                coll_interval = st.number_input("Intervalle par defaut (min)", value=coll.get("default_interval_minutes", 60), min_value=5)
+                coll_concurrent = st.number_input("Collecteurs simultanes", value=coll.get("max_concurrent_collectors", 3), min_value=1, max_value=10)
+                coll_timeout = st.number_input("Timeout collecteur (s)", value=coll.get("collector_timeout", 120), min_value=10)
+            with col2:
+                coll_max_items = st.number_input("Items max par source", value=coll.get("max_items_per_source", 100), min_value=10)
+                coll_dedup = st.number_input("Fenetre dedup (jours)", value=coll.get("dedup_window_days", 30), min_value=1)
+
+            st.divider()
+            st.subheader("🌐 HTTP / Anti-WAF")
+            st.caption("Headers et empreinte TLS pour eviter les blocages (erreurs 403)")
+
+            http = raw.get("http", {})
+            col1, col2 = st.columns(2)
+            with col1:
+                http_timeout = st.number_input("HTTP timeout (s)", value=http.get("timeout", 30), min_value=5)
+                http_retries = st.number_input("HTTP retries", value=http.get("max_retries", 3), min_value=0)
+            with col2:
+                http_rate = st.number_input("Rate limit (req/s)", value=float(http.get("rate_limit", 2.0)), min_value=0.1, step=0.5)
+
+            # JA3 Fingerprint Impersonation
+            st.markdown("**🔐 Empreinte JA3 (TLS Fingerprint)**")
+            st.caption("Imite l'empreinte TLS d'un vrai navigateur pour contourner les WAF avances")
+
+            impersonate_options = {
+                "disabled": "❌ Desactive (httpx standard)",
+                "chrome": "🌐 Chrome (recommande)",
+                "firefox": "🦊 Firefox",
+                "safari": "🍎 Safari",
+                "edge": "📘 Edge",
+            }
+            current_impersonate = http.get("impersonate", "disabled")
+            http_impersonate = st.selectbox(
+                "Navigateur a imiter",
+                options=list(impersonate_options.keys()),
+                index=list(impersonate_options.keys()).index(current_impersonate) if current_impersonate in impersonate_options else 0,
+                format_func=lambda x: impersonate_options.get(x, x),
+                help="Active curl_cffi pour imiter l'empreinte TLS d'un navigateur"
+            )
+
+            # Version selection based on browser
+            version_options = {
+                "chrome": ["chrome120", "chrome119", "chrome110", "chrome107", "chrome104", "chrome101", "chrome100", "chrome99"],
+                "firefox": ["firefox120", "firefox117", "firefox110", "firefox102", "firefox99"],
+                "safari": ["safari17_0", "safari15_5", "safari15_3"],
+                "edge": ["edge120", "edge101", "edge99"],
+            }
+            http_impersonate_version = http.get("impersonate_version", "chrome120")
+            if http_impersonate != "disabled":
+                versions = version_options.get(http_impersonate, ["chrome120"])
+                http_impersonate_version = st.selectbox(
+                    "Version du navigateur",
+                    options=versions,
+                    index=versions.index(http_impersonate_version) if http_impersonate_version in versions else 0,
+                    help="Version specifique de l'empreinte TLS"
+                )
+
+            if http_impersonate != "disabled":
+                # Check if curl_cffi is available
+                try:
+                    from curl_cffi.requests import AsyncSession
+                    st.success("✅ curl_cffi est installe - L'impersonation JA3 est disponible")
+                    st.info("ℹ️ **Mode impersonation actif** : Les headers navigateur (User-Agent, Sec-Ch-*, etc.) "
+                            "sont geres automatiquement par curl_cffi pour correspondre au navigateur impersone. "
+                            "Seul Accept-Language et les headers personnalises sont utilises.")
+                except ImportError:
+                    st.warning("⚠️ curl_cffi n'est pas installe. Installez avec: `pip install curl_cffi`")
+
+            # Accept-Language is always used (user preference)
+            http_accept_lang = st.text_input(
+                "Accept-Language",
+                value=http.get("accept_language", DEFAULT_ACCEPT_LANG),
+                help="Langues preferees (toujours utilise, meme avec impersonation JA3)"
+            )
+
+            # Manual headers only when impersonation is disabled
+            if http_impersonate == "disabled":
+                st.markdown("**Headers navigateur** (mode manuel)")
+                st.caption("Ces headers sont utilises uniquement quand l'impersonation JA3 est desactivee")
+
+                http_ua = st.text_input(
+                    "User-Agent",
+                    value=http.get("user_agent", DEFAULT_UA),
+                    help="Identifiant du navigateur simule"
+                )
+                http_accept = st.text_input(
+                    "Accept",
+                    value=http.get("accept", DEFAULT_ACCEPT),
+                    help="Types de contenu acceptes"
+                )
+
+                with st.expander("🔧 Headers avances (Chrome/Chromium)"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        http_sec_ch_ua = st.text_input(
+                            "Sec-Ch-Ua",
+                            value=http.get("sec_ch_ua", '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'),
+                        )
+                        http_sec_ch_ua_mobile = st.text_input(
+                            "Sec-Ch-Ua-Mobile",
+                            value=http.get("sec_ch_ua_mobile", "?0"),
+                        )
+                        http_sec_ch_ua_platform = st.text_input(
+                            "Sec-Ch-Ua-Platform",
+                            value=http.get("sec_ch_ua_platform", '"Windows"'),
+                        )
+                        http_sec_fetch_dest = st.text_input(
+                            "Sec-Fetch-Dest",
+                            value=http.get("sec_fetch_dest", "document"),
+                        )
+                    with col2:
+                        http_sec_fetch_mode = st.text_input(
+                            "Sec-Fetch-Mode",
+                            value=http.get("sec_fetch_mode", "navigate"),
+                        )
+                        http_sec_fetch_site = st.text_input(
+                            "Sec-Fetch-Site",
+                            value=http.get("sec_fetch_site", "none"),
+                        )
+                        http_upgrade = st.text_input(
+                            "Upgrade-Insecure-Requests",
+                            value=http.get("upgrade_insecure_requests", "1"),
+                        )
+                        http_dnt = st.text_input(
+                            "DNT (Do Not Track)",
+                            value=http.get("dnt", "1"),
+                        )
+            else:
+                # When impersonation is enabled, use existing config values (headers managed by curl_cffi)
+                http_ua = http.get("user_agent", DEFAULT_UA)
+                http_accept = http.get("accept", DEFAULT_ACCEPT)
+                http_sec_ch_ua = http.get("sec_ch_ua", '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"')
+                http_sec_ch_ua_mobile = http.get("sec_ch_ua_mobile", "?0")
+                http_sec_ch_ua_platform = http.get("sec_ch_ua_platform", '"Windows"')
+                http_sec_fetch_dest = http.get("sec_fetch_dest", "document")
+                http_sec_fetch_mode = http.get("sec_fetch_mode", "navigate")
+                http_sec_fetch_site = http.get("sec_fetch_site", "none")
+                http_upgrade = http.get("upgrade_insecure_requests", "1")
+                http_dnt = http.get("dnt", "1")
+
+            with st.expander("📝 Headers personnalises (JSON)"):
+                st.caption("Ajoutez des headers supplementaires au format JSON")
+                custom_headers_default = http.get("custom_headers", {})
+                http_custom_headers = st.text_area(
+                    "Custom Headers",
+                    value=_json_coll.dumps(custom_headers_default, indent=2) if custom_headers_default else "{}",
+                    height=100,
+                    placeholder='{"X-Custom-Header": "value"}',
+                )
+
+            st.divider()
+            st.subheader("Scheduler")
+            sched = raw.get("scheduler", {})
+            col1, col2 = st.columns(2)
+            with col1:
+                sched_enabled = st.checkbox("Scheduler actif", value=sched.get("enabled", True))
+                daily_time = st.text_input("Rapport quotidien (HH:MM)", value=sched.get("daily_report_time", "08:00"))
+            with col2:
+                weekly_day = st.number_input("Jour rapport hebdo (0=lun)", value=sched.get("weekly_report_day", 0), min_value=0, max_value=6)
+                weekly_time = st.text_input("Heure rapport hebdo", value=sched.get("weekly_report_time", "09:00"))
+
+            if st.form_submit_button("💾 Sauvegarder Collecte", use_container_width=True):
+                # Parse custom headers
+                try:
+                    custom_headers_parsed = _json_coll.loads(http_custom_headers) if http_custom_headers.strip() else {}
+                except _json_coll.JSONDecodeError:
+                    custom_headers_parsed = {}
+                    st.warning("Headers personnalises JSON invalide, ignore")
+
+                new_config = dict(raw)
+                new_config["collection"] = {
+                    "default_interval_minutes": coll_interval,
+                    "max_concurrent_collectors": coll_concurrent,
+                    "max_items_per_source": coll_max_items,
+                    "dedup_window_days": coll_dedup,
+                    "collector_timeout": coll_timeout,
+                }
+                new_config["http"] = {
+                    "timeout": http_timeout,
+                    "max_retries": http_retries,
+                    "retry_delay": raw.get("http", {}).get("retry_delay", 5),
+                    "rate_limit": http_rate,
+                    "cache": raw.get("http", {}).get("cache", {}),
+                    # JA3 impersonation
+                    "impersonate": http_impersonate,
+                    "impersonate_version": http_impersonate_version,
+                    # Browser-like headers
+                    "user_agent": http_ua,
+                    "accept": http_accept,
+                    "accept_language": http_accept_lang,
+                    "accept_encoding": "gzip, deflate, br",
+                    "cache_control": "no-cache",
+                    # Sec-Ch headers
+                    "sec_ch_ua": http_sec_ch_ua,
+                    "sec_ch_ua_mobile": http_sec_ch_ua_mobile,
+                    "sec_ch_ua_platform": http_sec_ch_ua_platform,
+                    "sec_fetch_dest": http_sec_fetch_dest,
+                    "sec_fetch_mode": http_sec_fetch_mode,
+                    "sec_fetch_site": http_sec_fetch_site,
+                    "sec_fetch_user": "?1",
+                    "upgrade_insecure_requests": http_upgrade,
+                    "dnt": http_dnt,
+                    # Custom headers
+                    "custom_headers": custom_headers_parsed,
+                }
+                new_config["scheduler"] = {
+                    "enabled": sched_enabled,
+                    "check_interval_seconds": sched.get("check_interval_seconds", 60),
+                    "daily_report_time": daily_time,
+                    "weekly_report_day": weekly_day,
+                    "weekly_report_time": weekly_time,
+                }
+                try:
+                    _save_settings_yaml(new_config)
+                    st.success("Parametres de collecte sauvegardes !")
+                    st.info("Redemarrez l'application pour appliquer les nouveaux headers HTTP")
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+
+    with tabs[2]:
+        import json as _json
+        alerts_raw = _load_alerts_yaml()
+        alerting = alerts_raw.get("alerting", {})
+
+        with st.form("settings_alerts"):
+            # General
+            st.subheader("General")
+            alert_enabled = st.checkbox("Alertes activees", value=alerting.get("enabled", True))
+
+            st.divider()
+
+            # Aggregation
+            st.subheader("Agregation")
+            agg = alerting.get("aggregation", {})
+            agg_enabled = st.checkbox("Agregation activee", value=agg.get("enabled", True))
+            col1, col2 = st.columns(2)
+            with col1:
+                agg_window = st.number_input("Fenetre (minutes)", value=agg.get("window_minutes", 15), min_value=1)
+            with col2:
+                agg_max = st.number_input("Max alertes par fenetre", value=agg.get("max_alerts_per_window", 10), min_value=1)
+
+            st.divider()
+
+            # Quiet hours
+            st.subheader("Heures silencieuses")
+            qh = alerting.get("quiet_hours", {})
+            qh_enabled = st.checkbox("Heures silencieuses activees", value=qh.get("enabled", False))
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                qh_start = st.text_input("Debut (HH:MM)", value=qh.get("start", "22:00"))
+            with col2:
+                qh_end = st.text_input("Fin (HH:MM)", value=qh.get("end", "07:00"))
+            with col3:
+                qh_bypass = st.checkbox("Critical bypass", value=qh.get("bypass_for_critical", True))
+
+            st.divider()
+
+            # Channels
+            st.subheader("Canaux de notification")
+            channels = alerting.get("channels", {})
+
+            # Telegram
+            with st.expander("📱 Telegram"):
+                tg = channels.get("telegram", {})
+                tg_enabled = st.checkbox("Telegram actif", value=tg.get("enabled", False), key="tg_enabled")
+                col1, col2 = st.columns(2)
+                with col1:
+                    tg_token = st.text_input("Bot Token", value=tg.get("bot_token", ""), key="tg_token")
+                    tg_severity = st.selectbox("Severite min.", options=["info", "notice", "warning", "critical"],
+                        index=["info", "notice", "warning", "critical"].index(tg.get("min_severity", "notice")),
+                        key="tg_severity")
+                with col2:
+                    tg_chat = st.text_input("Chat ID", value=tg.get("chat_id", ""), key="tg_chat")
+                    tg_silent = st.checkbox("Mode silencieux", value=tg.get("silent", False), key="tg_silent")
+                tg_preview = st.checkbox("Desactiver apercu liens", value=tg.get("disable_web_preview", False), key="tg_preview")
+
+            # Email
+            with st.expander("📧 Email"):
+                em = channels.get("email", {})
+                em_enabled = st.checkbox("Email actif", value=em.get("enabled", False), key="em_enabled")
+                col1, col2 = st.columns(2)
+                with col1:
+                    em_host = st.text_input("Serveur SMTP", value=em.get("smtp_host", "smtp.gmail.com"), key="em_host")
+                    em_port = st.number_input("Port SMTP", value=em.get("smtp_port", 587), min_value=1, key="em_port")
+                    em_tls = st.checkbox("Utiliser TLS", value=em.get("use_tls", True), key="em_tls")
+                    em_user = st.text_input("Identifiant", value=em.get("username", ""), key="em_user")
+                    em_pass = st.text_input("Mot de passe", value=em.get("password", ""), type="password", key="em_pass")
+                with col2:
+                    em_from = st.text_input("Adresse expediteur", value=em.get("from_address", ""), key="em_from")
+                    em_from_name = st.text_input("Nom expediteur", value=em.get("from_name", "SentinelPi"), key="em_from_name")
+                    em_to = st.text_area("Destinataires (un par ligne)", value="\n".join(em.get("to_addresses", [])), key="em_to", height=80)
+                    em_severity = st.selectbox("Severite min.", options=["info", "notice", "warning", "critical"],
+                        index=["info", "notice", "warning", "critical"].index(em.get("min_severity", "warning")),
+                        key="em_severity")
+                em_subject = st.text_input("Template sujet", value=em.get("subject_template", "[SentinelPi] {severity_emoji} {severity}: {title}"), key="em_subject")
+                em_full = st.checkbox("Inclure contenu complet", value=em.get("include_full_content", True), key="em_full")
+
+            # Webhook
+            with st.expander("🔗 Webhook"):
+                wh = channels.get("webhook", {})
+                wh_enabled = st.checkbox("Webhook actif", value=wh.get("enabled", False), key="wh_enabled")
+                col1, col2 = st.columns(2)
+                with col1:
+                    wh_url = st.text_input("URL", value=wh.get("url", ""), key="wh_url")
+                    wh_method = st.selectbox("Methode", options=["POST", "PUT", "PATCH"],
+                        index=["POST", "PUT", "PATCH"].index(wh.get("method", "POST")) if wh.get("method", "POST") in ["POST", "PUT", "PATCH"] else 0,
+                        key="wh_method")
+                with col2:
+                    wh_severity = st.selectbox("Severite min.", options=["info", "notice", "warning", "critical"],
+                        index=["info", "notice", "warning", "critical"].index(wh.get("min_severity", "notice")),
+                        key="wh_severity")
+                    wh_timeout = st.number_input("Timeout (s)", value=wh.get("timeout", 30), min_value=1, key="wh_timeout")
+                    wh_retries = st.number_input("Max retries", value=wh.get("max_retries", 3), min_value=0, key="wh_retries")
+                wh_headers_default = _json.dumps(wh.get("headers", {"Content-Type": "application/json"}), indent=2)
+                wh_headers_str = st.text_area("Headers (JSON)", value=wh_headers_default, height=100, key="wh_headers")
+
+            # Desktop
+            with st.expander("🖥 Desktop"):
+                dk = channels.get("desktop", {})
+                dk_enabled = st.checkbox("Desktop actif", value=dk.get("enabled", False), key="dk_enabled")
+                col1, col2 = st.columns(2)
+                with col1:
+                    dk_severity = st.selectbox("Severite min.", options=["info", "notice", "warning", "critical"],
+                        index=["info", "notice", "warning", "critical"].index(dk.get("min_severity", "warning")),
+                        key="dk_severity")
+                with col2:
+                    dk_timeout = st.number_input("Timeout (s)", value=dk.get("timeout", 10), min_value=1, key="dk_timeout")
+
+            st.divider()
+
+            # Routing rules
+            st.subheader("Regles de routage")
+            rules = alerting.get("rules", [])
+            rules_text = ""
+            for i, rule in enumerate(rules):
+                parts = []
+                if "category" in rule:
+                    parts.append(f"category={rule['category']}")
+                if "tags" in rule:
+                    parts.append(f"tags={','.join(rule['tags'])}")
+                parts.append(f"min_severity={rule.get('min_severity', 'info')}")
+                parts.append(f"channels={','.join(rule.get('channels', []))}")
+                rules_text += " | ".join(parts) + "\n"
+            rules_input = st.text_area(
+                "Regles (une par ligne: category=X | tags=a,b | min_severity=Y | channels=c1,c2)",
+                value=rules_text.strip(),
+                height=150,
+                key="routing_rules",
+            )
+
+            if st.form_submit_button("💾 Sauvegarder Alertes", use_container_width=True):
+                # Parse headers JSON
+                try:
+                    wh_headers_parsed = _json.loads(wh_headers_str) if wh_headers_str.strip() else {}
+                except _json.JSONDecodeError:
+                    wh_headers_parsed = {"Content-Type": "application/json"}
+
+                # Parse routing rules
+                parsed_rules = []
+                for line in rules_input.strip().split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rule = {}
+                    for part in line.split("|"):
+                        part = part.strip()
+                        if "=" in part:
+                            key, val = part.split("=", 1)
+                            key = key.strip()
+                            val = val.strip()
+                            if key == "category":
+                                rule["category"] = val
+                            elif key == "tags":
+                                rule["tags"] = [t.strip() for t in val.split(",") if t.strip()]
+                            elif key == "min_severity":
+                                rule["min_severity"] = val
+                            elif key == "channels":
+                                rule["channels"] = [c.strip() for c in val.split(",") if c.strip()]
+                    if rule:
+                        parsed_rules.append(rule)
+
+                # Parse email recipients
+                em_to_list = [addr.strip() for addr in em_to.split("\n") if addr.strip()]
+
+                new_alerts = {
+                    "alerting": {
+                        "enabled": alert_enabled,
+                        "aggregation": {
+                            "enabled": agg_enabled,
+                            "window_minutes": agg_window,
+                            "max_alerts_per_window": agg_max,
+                            "send_summary": agg.get("send_summary", True),
+                        },
+                        "quiet_hours": {
+                            "enabled": qh_enabled,
+                            "start": qh_start,
+                            "end": qh_end,
+                            "bypass_for_critical": qh_bypass,
+                        },
+                        "channels": {
+                            "telegram": {
+                                "enabled": tg_enabled,
+                                "bot_token": tg_token,
+                                "chat_id": tg_chat,
+                                "min_severity": tg_severity,
+                                "disable_web_preview": tg_preview,
+                                "silent": tg_silent,
+                                "format": channels.get("telegram", {}).get("format", ""),
+                            },
+                            "email": {
+                                "enabled": em_enabled,
+                                "smtp_host": em_host,
+                                "smtp_port": em_port,
+                                "use_tls": em_tls,
+                                "username": em_user,
+                                "password": em_pass,
+                                "from_address": em_from,
+                                "from_name": em_from_name,
+                                "to_addresses": em_to_list,
+                                "min_severity": em_severity,
+                                "subject_template": em_subject,
+                                "include_full_content": em_full,
+                            },
+                            "webhook": {
+                                "enabled": wh_enabled,
+                                "url": wh_url,
+                                "method": wh_method,
+                                "headers": wh_headers_parsed,
+                                "min_severity": wh_severity,
+                                "timeout": wh_timeout,
+                                "max_retries": wh_retries,
+                            },
+                            "desktop": {
+                                "enabled": dk_enabled,
+                                "min_severity": dk_severity,
+                                "timeout": dk_timeout,
+                            },
+                        },
+                        "rules": parsed_rules,
+                        "severity_emojis": alerting.get("severity_emojis", {
+                            "info": "ℹ️", "notice": "📢", "warning": "⚠️", "critical": "🚨",
+                        }),
+                    }
+                }
+                try:
+                    _save_alerts_yaml(new_alerts)
+                    st.success("Configuration des alertes sauvegardee !")
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+
+    with tabs[3]:
+        # Preference Learning Tab
+        st.subheader("Systeme d'apprentissage")
+        st.caption("Apprend vos preferences a partir de vos actions (star, lecture, archivage, suppression)")
+
+        # Load preference summary
+        from src.processors.preference_learner import get_preference_learner
+        learner = get_preference_learner()
+        summary = run_async(learner.get_preference_summary())
+
+        # Status indicator
+        col_status, col_count = st.columns(2)
+        with col_status:
+            if summary.is_active:
+                st.success("🧠 Apprentissage actif")
+            else:
+                progress = min(100, int(summary.total_actions / summary.min_actions_required * 100))
+                st.warning(f"📊 Apprentissage: {summary.total_actions}/{summary.min_actions_required} actions ({progress}%)")
+                st.progress(progress / 100)
+        with col_count:
+            st.metric("Actions enregistrees", summary.total_actions)
+
+        st.divider()
+
+        # Configuration
+        learning_config = raw.get("learning", {})
+        with st.form("settings_learning"):
+            st.markdown("**Configuration**")
+            col1, col2 = st.columns(2)
+            with col1:
+                learn_enabled = st.checkbox("Apprentissage actif", value=learning_config.get("enabled", True))
+                learn_rate = st.slider(
+                    "Taux d'apprentissage",
+                    min_value=0.01, max_value=0.5,
+                    value=float(learning_config.get("learning_rate", 0.1)),
+                    step=0.01,
+                    help="Plus eleve = adaptation plus rapide aux nouveaux interets"
+                )
+            with col2:
+                learn_decay = st.number_input(
+                    "Demi-vie (jours)",
+                    min_value=7, max_value=90,
+                    value=int(learning_config.get("decay_half_life_days", 30)),
+                    help="Temps pour qu'une preference perde la moitie de son poids"
+                )
+                learn_max_score = st.number_input(
+                    "Score max preference",
+                    min_value=5.0, max_value=50.0,
+                    value=float(learning_config.get("max_preference_score", 25.0)),
+                    step=5.0,
+                    help="Points max ajoutes/retires au score de pertinence"
+                )
+
+            if st.form_submit_button("💾 Sauvegarder Apprentissage", use_container_width=True):
+                new_config = dict(raw)
+                new_config["learning"] = {
+                    "enabled": learn_enabled,
+                    "learning_rate": learn_rate,
+                    "decay_half_life_days": learn_decay,
+                    "min_actions_required": int(learning_config.get("min_actions_required", 20)),
+                    "max_preference_score": learn_max_score,
+                }
+                try:
+                    _save_settings_yaml(new_config)
+                    st.success("Parametres d'apprentissage sauvegardes !")
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+
+        st.divider()
+
+        # Preferences display
+        if summary.total_actions > 0:
+            st.markdown("**Preferences apprises**")
+
+            # Preferences by type
+            if summary.preferences_by_type:
+                type_labels = {
+                    "keyword": "Mots-cles",
+                    "source": "Sources",
+                    "category": "Categories",
+                    "author": "Auteurs",
+                }
+                type_str = " | ".join([
+                    f"{type_labels.get(t, t)}: {c}"
+                    for t, c in summary.preferences_by_type.items()
+                ])
+                st.caption(f"Repartition: {type_str}")
+
+            col_pos, col_neg = st.columns(2)
+
+            with col_pos:
+                st.markdown("**👍 Preferences positives** (plus affichees)")
+                if summary.positive_preferences:
+                    for pref in summary.positive_preferences[:8]:
+                        type_icon = {"keyword": "🏷️", "source": "📰", "category": "📁", "author": "✍️"}.get(pref["type"], "📌")
+                        weight_pct = int(pref["weight"] * 100)
+                        st.markdown(
+                            f'{type_icon} **{pref["value"]}** `+{weight_pct}%`'
+                            f' <small style="color:#888">({pref["positive_count"]}👍 / {pref["negative_count"]}👎)</small>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.caption("Aucune preference positive")
+
+            with col_neg:
+                st.markdown("**👎 Preferences negatives** (moins affichees)")
+                if summary.negative_preferences:
+                    for pref in summary.negative_preferences[:8]:
+                        type_icon = {"keyword": "🏷️", "source": "📰", "category": "📁", "author": "✍️"}.get(pref["type"], "📌")
+                        weight_pct = int(abs(pref["weight"]) * 100)
+                        st.markdown(
+                            f'{type_icon} **{pref["value"]}** `-{weight_pct}%`'
+                            f' <small style="color:#888">({pref["positive_count"]}👍 / {pref["negative_count"]}👎)</small>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.caption("Aucune preference negative")
+        else:
+            st.info("Commencez a interagir avec les articles (star, lecture, archivage, suppression) pour que le systeme apprenne vos preferences.")
+
+        st.divider()
+
+        # Reset button
+        st.markdown("**Reinitialisation**")
+        st.caption("Efface toutes les preferences apprises et l'historique d'actions")
+        confirm_reset_prefs = st.checkbox("Je confirme la reinitialisation des preferences", key="confirm_reset_prefs")
+        if st.button("🗑 Reinitialiser les preferences", use_container_width=False, disabled=not confirm_reset_prefs):
+            with st.spinner("Reinitialisation..."):
+                run_async(learner.reset_preferences())
+            st.success("Preferences reinitialisees !")
+            st.rerun()
+
+    with tabs[4]:
+        with st.form("settings_db"):
+            db = raw.get("database", {})
+            db_path = st.text_input("Chemin DB", value=db.get("path", "data/sentinelpi.db"))
+            db_echo = st.checkbox("Afficher SQL (debug)", value=db.get("echo", False))
+            if st.form_submit_button("💾 Sauvegarder DB", use_container_width=True):
+                new_config = dict(raw)
+                new_config["database"] = {"path": db_path, "echo": db_echo}
+                try:
+                    _save_settings_yaml(new_config)
+                    st.success("Parametres DB sauvegardes !")
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+
+        # Database reset
+        st.divider()
+        st.subheader("Reinitialisation de la base")
+        st.caption("Ces actions sont irreversibles. Toutes les donnees supprimees seront perdues.")
+
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            st.markdown("**Purger les items**")
+            st.caption("Supprime items et alertes, garde sources et filtres")
+            confirm_purge = st.checkbox("Je confirme la purge", key="confirm_purge")
+            if st.button("🗑 Purger", use_container_width=True, disabled=not confirm_purge):
+                with st.spinner("Purge en cours..."):
+                    run_async(reset_database(keep_sources=True))
+                st.success("Items et alertes supprimes !")
+                st.rerun()
+
+        with col_r2:
+            st.markdown("**Reinitialisation complete**")
+            st.caption("Supprime tout : items, alertes, sources, filtres")
+            confirm_reset = st.checkbox("Je confirme la reinitialisation", key="confirm_reset")
+            if st.button("💣 Tout reinitialiser", use_container_width=True, disabled=not confirm_reset):
+                with st.spinner("Reinitialisation en cours..."):
+                    run_async(reset_database(keep_sources=False))
+                st.success("Base de donnees reinitialisee !")
+                st.rerun()
+
+    with tabs[5]:
+        with st.form("settings_logs"):
+            log = raw.get("logging", {})
+            col1, col2 = st.columns(2)
+            with col1:
+                log_file = st.text_input("Fichier log", value=log.get("file", "logs/sentinelpi.log"))
+                log_rotation = st.text_input("Rotation", value=log.get("rotation", "10 MB"))
+            with col2:
+                log_retention = st.text_input("Retention", value=log.get("retention", "30 days"))
+                log_colorize = st.checkbox("Couleurs console", value=log.get("colorize", True))
+            if st.form_submit_button("💾 Sauvegarder Logs", use_container_width=True):
+                new_config = dict(raw)
+                new_config["logging"] = {
+                    "level": raw.get("logging", {}).get("level", "INFO"),
+                    "file": log_file,
+                    "rotation": log_rotation, "retention": log_retention,
+                    "format": log.get("format", ""),
+                    "colorize": log_colorize,
+                }
+                try:
+                    _save_settings_yaml(new_config)
+                    st.success("Parametres logs sauvegardes !")
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+
+    with tabs[6]:
+        with st.form("settings_maint"):
+            maint = raw.get("maintenance", {})
+            col1, col2 = st.columns(2)
+            with col1:
+                maint_cleanup = st.checkbox("Nettoyage auto", value=maint.get("cleanup_enabled", True))
+                maint_retention = st.number_input("Retention items (jours)", value=maint.get("retention_days", 90), min_value=1)
+            with col2:
+                maint_time = st.text_input("Heure nettoyage", value=maint.get("cleanup_time", "03:00"))
+                maint_vacuum = st.checkbox("Vacuum hebdo", value=maint.get("vacuum_enabled", True))
+            if st.form_submit_button("💾 Sauvegarder Maintenance", use_container_width=True):
+                new_config = dict(raw)
+                new_config["maintenance"] = {
+                    "cleanup_enabled": maint_cleanup,
+                    "retention_days": maint_retention,
+                    "cleanup_time": maint_time,
+                    "vacuum_enabled": maint_vacuum,
+                }
+                try:
+                    _save_settings_yaml(new_config)
+                    st.success("Parametres maintenance sauvegardes !")
+                except Exception as e:
+                    st.error(f"Erreur: {e}")
+
+    with tabs[7]:
+        current_hash = raw.get("dashboard", {}).get("password_hash", "")
+        if current_hash:
+            st.info("Un mot de passe est configure. Les visiteurs non authentifies sont en lecture seule.")
+        else:
+            st.info("Aucun mot de passe configure. Acces libre.")
+
+        # Require current password if one is set
+        can_edit_pw = True
+        if current_hash:
+            current_pw = st.text_input("Mot de passe actuel", type="password", key="current_pw")
+            if current_pw:
+                if _check_password(current_pw, current_hash):
+                    can_edit_pw = True
+                else:
+                    st.error("Mot de passe actuel incorrect")
+                    can_edit_pw = False
+            else:
+                can_edit_pw = False
+
+        if can_edit_pw:
+            with st.form("password_form"):
+                new_pw = st.text_input("Nouveau mot de passe", type="password", key="new_pw")
+                confirm_pw = st.text_input("Confirmer le mot de passe", type="password", key="confirm_pw")
+
+                col_pw1, col_pw2 = st.columns(2)
+                with col_pw1:
+                    if st.form_submit_button("🔒 Definir", use_container_width=True):
+                        if new_pw and new_pw == confirm_pw:
+                            new_config = _load_settings_yaml()
+                            new_config.setdefault("dashboard", {})["password_hash"] = _hash_password(new_pw)
+                            try:
+                                _save_settings_yaml(new_config)
+                                st.success("Mot de passe mis a jour !")
+                            except Exception as e:
+                                st.error(f"Erreur: {e}")
+                        elif not new_pw:
+                            st.warning("Veuillez saisir un mot de passe")
+                        else:
+                            st.error("Les mots de passe ne correspondent pas")
+                with col_pw2:
+                    if st.form_submit_button("🔓 Supprimer", use_container_width=True):
+                        new_config = _load_settings_yaml()
+                        new_config.setdefault("dashboard", {}).pop("password_hash", None)
+                        try:
+                            _save_settings_yaml(new_config)
+                            st.success("Mot de passe supprime.")
+                        except Exception as e:
+                            st.error(f"Erreur: {e}")
+
+        # Logout
+        st.divider()
+        if st.session_state.get("authenticated"):
+            if st.button("🚪 Se deconnecter", use_container_width=True):
+                st.session_state.authenticated = False
+                st.session_state.read_only = False
+                st.rerun()
+
+    # Restart button (outside form)
+    st.divider()
+    st.subheader("Redemarrage")
+    st.caption("Redemarrer l'application pour appliquer les changements de configuration.")
+    if st.button("🔄 Redemarrer l'application", type="primary"):
+        import subprocess, sys, os, time
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        subprocess.Popen(
+            [sys.executable, "-m", "streamlit", "run",
+             os.path.abspath(__file__),
+             "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"],
+            cwd=project_root
+        )
+        st.info("Redemarrage en cours... La page va se recharger automatiquement.")
+        time.sleep(1)
+        os._exit(0)
+
+
+def _check_password(password: str, password_hash: str) -> bool:
+    """Check if a password matches the stored hash."""
+    return hashlib.sha256(password.encode()).hexdigest() == password_hash
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password with SHA-256."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def render_login_page() -> None:
+    """Render the login page."""
+    st.markdown(f"### {APP_ICON} {APP_NAME}")
+    st.markdown("---")
+    st.subheader("Connexion")
+
+    password = st.text_input("Mot de passe", type="password", key="login_password")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔓 Se connecter", use_container_width=True, type="primary"):
+            raw = _load_settings_yaml()
+            stored_hash = raw.get("dashboard", {}).get("password_hash", "")
+            if stored_hash and _check_password(password, stored_hash):
+                st.session_state.authenticated = True
+                st.session_state.read_only = False
+                st.rerun()
+            else:
+                st.error("Mot de passe incorrect")
+    with col2:
+        if st.button("👁 Lecture seule", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.read_only = True
+            st.rerun()
+
+
+def render_docs_page() -> None:
+    """Render the documentation page."""
+    st.header("📚 Documentation")
+
+    st.markdown(f"""
+    Bienvenue dans la documentation de **{APP_NAME}**, votre station de veille multi-sources.
+    """)
+
+    # Table of contents
+    tabs = st.tabs([
+        "🚀 Demarrage",
+        "📡 Sources",
+        "🎯 Filtres",
+        "🔔 Alertes",
+        "📊 Statistiques",
+        "⌨️ CLI",
+        "🔧 Configuration",
+        "❓ FAQ",
+    ])
+
+    # =====================================================
+    # TAB: Getting Started
+    # =====================================================
+    with tabs[0]:
+        st.subheader("🚀 Demarrage rapide")
+
+        st.markdown("""
+        ### Qu'est-ce que SentinelPi ?
+
+        SentinelPi est une station de veille autonome qui collecte, filtre et analyse
+        des contenus provenant de multiples sources (RSS, Reddit, Mastodon, YouTube, etc.).
+
+        ### Architecture
+
+        ```
+        Sources (RSS, Web, Social)
+            ↓
+        Collecteurs (async)
+            ↓
+        Deduplication (guid/hash)
+            ↓
+        Filtrage (mots-cles, regex)
+            ↓
+        Enrichissement (keywords, langue)
+            ↓
+        Scoring (pertinence)
+            ↓
+        Stockage (SQLite)
+            ↓
+        Alertes (Telegram, Email, Webhook)
+        ```
+
+        ### Premier lancement
+
+        1. **Configurer les sources** : Allez dans l'onglet 📡 Sources et ajoutez vos flux RSS
+        2. **Definir des filtres** : Creez des filtres dans 🎯 Filtres pour surveiller des mots-cles
+        3. **Configurer les alertes** : Dans ⚙️ Config > Alertes, activez Telegram ou Email
+        4. **Lancer la collecte** : Cliquez sur "Collecter tout" ou lancez `sentinelpi` en CLI
+
+        ### Modes de fonctionnement
+
+        | Mode | Commande | Description |
+        |------|----------|-------------|
+        | Continu | `sentinelpi` | Tourne en arriere-plan, collecte selon les intervalles |
+        | Ponctuel | `sentinelpi --once` | Une seule collecte puis arret |
+        | Dashboard | `sentinelpi-dashboard` | Interface web sur le port 8501 |
+        """)
+
+    # =====================================================
+    # TAB: Sources
+    # =====================================================
+    with tabs[1]:
+        st.subheader("📡 Gestion des sources")
+
+        st.markdown("""
+        ### Types de sources supportes
+
+        | Type | Description | Configuration |
+        |------|-------------|---------------|
+        | **RSS** | Flux RSS/Atom standard | URL du flux |
+        | **Web** | Scraping de pages HTML | Selecteurs CSS |
+        | **Reddit** | Subreddits publics | Nom du subreddit, tri |
+        | **Mastodon** | Hashtags ou comptes | Instance, hashtag/compte |
+        | **YouTube** | Chaines YouTube | ID de chaine |
+        | **Custom** | API JSON personnalisee | Mapping des champs |
+
+        ### Ajouter une source RSS
+
+        1. Cliquez sur **➕ Ajouter** dans la page Sources
+        2. Selectionnez le type **rss**
+        3. Entrez le nom et l'URL du flux
+        4. Definissez la categorie (optionnel)
+        5. Ajustez l'intervalle de collecte (defaut: 60 min)
+
+        ### Import/Export OPML
+
+        Vous pouvez importer vos flux depuis un autre lecteur RSS :
+
+        1. Exportez vos flux au format OPML depuis votre ancien lecteur
+        2. Dans SentinelPi, cliquez sur **📤 OPML**
+        3. Uploadez le fichier `.opml`
+        4. Les sources seront importees avec leurs categories
+
+        **Export** : Cliquez sur OPML > Exporter pour sauvegarder vos sources.
+
+        ### Parametres avances
+
+        Dans `config/sources.yaml`, vous pouvez configurer :
+
+        ```yaml
+        - name: "Mon flux"
+          type: rss
+          url: "https://example.com/feed.xml"
+          category: "tech"
+          tags: ["important", "veille"]
+          interval_minutes: 30
+          priority: 1  # 1=haute, 2=normale, 3=basse
+          enabled: true
+          config:
+            max_items: 50
+            include_content: true
+        ```
+
+        ### Scraping Web
+
+        Pour les sites sans flux RSS :
+
+        ```yaml
+        - name: "Actualites Concurrent"
+          type: web
+          url: "https://example.com/news"
+          config:
+            selector: "article.news-item"
+            title_selector: "h2"
+            link_selector: "a"
+            date_selector: ".date"
+            content_selector: ".excerpt"
+            date_format: "%d/%m/%Y"
+        ```
+        """)
+
+    # =====================================================
+    # TAB: Filters
+    # =====================================================
+    with tabs[2]:
+        st.subheader("🎯 Systeme de filtrage")
+
+        st.markdown("""
+        ### Principe
+
+        Les filtres permettent de :
+        - **Inclure** : Ne garder que certains contenus
+        - **Exclure** : Supprimer des contenus non pertinents
+        - **Alerter** : Declencher une notification
+        - **Surligner** : Mettre en evidence dans le flux
+        - **Taguer** : Ajouter des tags automatiques
+
+        ### Types de conditions
+
+        | Type | Description | Exemple |
+        |------|-------------|---------|
+        | **keywords** | Liste de mots-cles | "cybersecurite", "RGPD" |
+        | **regex** | Expression reguliere | `\\bcyber\\w+` |
+        | **compound** | Combinaison AND/OR | (A ET B) OU C |
+
+        ### Creer un filtre d'alerte
+
+        1. Allez dans 🎯 Filtres > **➕ Nouveau filtre**
+        2. Nom : "Alerte cybersecurite"
+        3. Action : **alert**
+        4. Severite : **warning** ou **critical**
+        5. Type de condition : **keywords**
+        6. Champ : **all** (titre + contenu)
+        7. Mots-cles : un par ligne
+           ```
+           cyberattaque
+           ransomware
+           fuite de donnees
+           vulnerabilite
+           ```
+        8. Cliquez sur **Enregistrer**
+
+        ### Modificateur de score
+
+        Chaque filtre peut modifier le score de pertinence :
+        - **+50** : Boost important (tres pertinent)
+        - **+20** : Boost leger
+        - **0** : Neutre
+        - **-20** : Penalite (moins interessant)
+
+        ### Ciblage
+
+        Vous pouvez limiter un filtre a :
+        - **Categories** : `tech, presse`
+        - **Sources specifiques** : IDs des sources
+
+        ### Exemples de filtres
+
+        **Surveillance concurrentielle :**
+        ```yaml
+        name: "Concurrent A"
+        action: alert
+        action_params:
+          severity: notice
+        conditions:
+          type: keywords
+          field: all
+          value: ["Concurrent A", "CEO Concurrent", "produit-concurrent"]
+        score_modifier: 30
+        ```
+
+        **Exclusion de spam :**
+        ```yaml
+        name: "Anti-spam"
+        action: exclude
+        conditions:
+          type: keywords
+          field: title
+          value: ["[Sponsored]", "[Ad]", "Promotion"]
+        ```
+        """)
+
+    # =====================================================
+    # TAB: Alerts
+    # =====================================================
+    with tabs[3]:
+        st.subheader("🔔 Systeme d'alertes")
+
+        st.markdown("""
+        ### Canaux de notification
+
+        | Canal | Configuration requise | Cas d'usage |
+        |-------|----------------------|-------------|
+        | **Telegram** | Bot token + Chat ID | Alertes mobiles rapides |
+        | **Email** | Serveur SMTP | Rapports, alertes critiques |
+        | **Webhook** | URL endpoint | Integration Slack, Discord, etc. |
+        | **Desktop** | Linux avec notify-send | Alertes locales |
+
+        ### Configurer Telegram
+
+        1. Creez un bot via [@BotFather](https://t.me/botfather) sur Telegram
+        2. Copiez le **Bot Token**
+        3. Demarrez une conversation avec votre bot
+        4. Obtenez votre **Chat ID** via [@userinfobot](https://t.me/userinfobot)
+        5. Dans SentinelPi : ⚙️ Config > Alertes > Telegram
+           - Collez le token et le chat ID
+           - Activez le canal
+
+        ### Configurer Email (Gmail)
+
+        1. Activez l'acces "Applications moins securisees" ou creez un mot de passe d'application
+        2. Dans SentinelPi : ⚙️ Config > Alertes > Email
+           - Serveur SMTP : `smtp.gmail.com`
+           - Port : `587`
+           - TLS : Active
+           - Identifiant : votre email
+           - Mot de passe : mot de passe d'application
+
+        ### Niveaux de severite
+
+        | Niveau | Emoji | Usage |
+        |--------|-------|-------|
+        | **info** | ℹ️ | Information generale |
+        | **notice** | 📢 | A noter |
+        | **warning** | ⚠️ | Attention requise |
+        | **critical** | 🚨 | Action immediate |
+
+        ### Agregation
+
+        Pour eviter le spam d'alertes :
+        - **Fenetre** : Regroupe les alertes sur X minutes
+        - **Max par fenetre** : Limite le nombre d'alertes
+        - **Heures silencieuses** : Pas d'alertes la nuit (sauf critical)
+
+        ### Webhook Discord
+
+        Pour envoyer vers Discord :
+        1. Dans Discord : Parametres du canal > Integrations > Webhooks
+        2. Copiez l'URL du webhook
+        3. Dans SentinelPi, configurez le webhook avec cette URL
+        """)
+
+    # =====================================================
+    # TAB: Statistics
+    # =====================================================
+    with tabs[4]:
+        st.subheader("📊 Score de pertinence")
+
+        st.markdown("""
+        ### Principe du scoring
+
+        **Plus le score est élevé, plus l'article est pertinent pour vous.**
+
+        Le score de pertinence (0-100) permet de trier automatiquement les articles
+        par ordre d'importance pour votre veille. Il est calculé à partir de plusieurs facteurs.
+
+        ### Échelle de pertinence
+
+        | Score | Couleur | Niveau | Action recommandée |
+        |-------|---------|--------|-------------------|
+        | **85-100** | 🔴 Rouge | Critique | À lire immédiatement |
+        | **70-84** | 🟠 Orange | Important | À lire rapidement |
+        | **50-69** | 🟢 Vert | Intéressant | À parcourir |
+        | **30-49** | 🔵 Bleu | Normal | Consultation optionnelle |
+        | **0-29** | ⚪ Gris | Faible | Probablement du bruit |
+
+        ### Composition du score
+
+        | Facteur | Points | Description |
+        |---------|--------|-------------|
+        | **Base** | 50 | Tout article démarre à 50 |
+        | **Fraîcheur** | 0 à +20 | Bonus pour articles récents (max si <6h) |
+        | **Priorité source** | +4 à +15 | Selon priorité : haute (+15), normale (+7), basse (+4) |
+        | **Qualité contenu** | 0 à +15 | Contenu riche, image, auteur identifié |
+        | **Filtres** | variable | Vos filtres ajoutent/retirent des points |
+        | **Highlight** | +30 | Si un filtre "highlight" matche |
+
+        ### Comment améliorer les scores
+
+        **1. Créez des filtres avec des modificateurs de score positifs :**
+        ```
+        Filtre "Concurrent" → action: alert, score: +30
+        Filtre "Cybersécurité" → action: alert, score: +20
+        ```
+
+        **2. Mettez vos sources importantes en priorité haute :**
+        - Sources critiques → Priorité 1 (haute) = +15 points
+        - Sources normales → Priorité 2 = +7 points
+        - Sources secondaires → Priorité 3 (basse) = +4 points
+
+        **3. Les articles récents sont favorisés :**
+        - < 6 heures : bonus maximum (+18-20)
+        - < 24 heures : bon bonus (+12-18)
+        - < 48 heures : bonus modéré (+6-12)
+        - > 48 heures : bonus faible (+0-6)
+
+        ### Statistiques
+
+        La page Stats affiche :
+        - **Top articles** : Items avec les meilleurs scores
+        - **Score moyen par source** : Identifier vos meilleures sources
+        - **Distribution des scores** : Vue d'ensemble de la pertinence
+        """)
+
+    # =====================================================
+    # TAB: CLI
+    # =====================================================
+    with tabs[5]:
+        st.subheader("⌨️ Interface en ligne de commande")
+
+        st.markdown("""
+        ### Commandes principales
+
+        ```bash
+        # Lancer la collecte en continu
+        sentinelpi
+
+        # Collecter une seule fois
+        sentinelpi --once
+
+        # Lancer le dashboard web
+        sentinelpi-dashboard
+        ```
+
+        ### Import/Export OPML
+
+        ```bash
+        # Exporter les sources RSS vers OPML
+        sentinelpi --export-opml data/mes_flux.opml
+
+        # Importer des sources depuis OPML
+        sentinelpi --import-opml fichier.opml
+        ```
+
+        ### Service systemd
+
+        Pour lancer SentinelPi au demarrage :
+
+        ```bash
+        # Creer le service
+        sudo nano /etc/systemd/system/sentinelpi.service
+        ```
+
+        Contenu :
+        ```ini
+        [Unit]
+        Description=SentinelPi Watch Station
+        After=network.target
+
+        [Service]
+        Type=simple
+        User=pi
+        WorkingDirectory=/home/pi/sentinelpi
+        ExecStart=/home/pi/sentinelpi/venv/bin/sentinelpi
+        Restart=always
+        RestartSec=10
+
+        [Install]
+        WantedBy=multi-user.target
+        ```
+
+        Activation :
+        ```bash
+        sudo systemctl daemon-reload
+        sudo systemctl enable sentinelpi
+        sudo systemctl start sentinelpi
+        ```
+
+        ### Logs
+
+        Les logs sont dans `logs/sentinelpi.log` :
+
+        ```bash
+        # Suivre les logs en temps reel
+        tail -f logs/sentinelpi.log
+
+        # Filtrer les erreurs
+        grep ERROR logs/sentinelpi.log
+        ```
+        """)
+
+    # =====================================================
+    # TAB: Configuration
+    # =====================================================
+    with tabs[6]:
+        st.subheader("🔧 Fichiers de configuration")
+
+        st.markdown("""
+        ### Structure des fichiers
+
+        ```
+        config/
+        ├── settings.yaml    # Parametres generaux
+        ├── sources.yaml     # Sources de donnees
+        ├── filters.yaml     # Regles de filtrage
+        └── alerts.yaml      # Configuration des alertes
+        ```
+
+        ### settings.yaml
+
+        ```yaml
+        app:
+          name: "SentinelPi"
+          version: "1.0.0"
+          timezone: "Europe/Paris"
+
+        database:
+          path: "data/sentinelpi.db"
+          echo: false  # true pour debug SQL
+
+        collection:
+          default_interval_minutes: 60
+          max_concurrent_collectors: 3
+          max_items_per_source: 100
+          dedup_window_days: 30
+
+        http:
+          timeout: 30
+          max_retries: 3
+          rate_limit: 2  # requetes/seconde
+          # JA3 fingerprint impersonation (anti-WAF)
+          impersonate: "chrome"  # disabled, chrome, firefox, safari, edge
+          impersonate_version: "chrome120"
+          # Headers navigateur
+          user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ..."
+
+        scheduler:
+          enabled: true
+          daily_report_time: "08:00"
+          weekly_report_day: 0  # 0=lundi
+
+        logging:
+          level: "INFO"
+          file: "logs/sentinelpi.log"
+          rotation: "10 MB"
+          retention: "30 days"
+
+        maintenance:
+          cleanup_enabled: true
+          retention_days: 90
+          vacuum_enabled: true
+        ```
+
+        ### Variables d'environnement
+
+        Creez un fichier `.env` a la racine :
+
+        ```env
+        # Telegram
+        TELEGRAM_BOT_TOKEN=123456:ABC...
+        TELEGRAM_CHAT_ID=987654321
+
+        # Email
+        SMTP_PASSWORD=votre_mot_de_passe
+
+        # API keys (pour custom collectors)
+        CUSTOM_API_KEY=xyz123
+        ```
+
+        Dans les fichiers YAML, utilisez `${VAR}` :
+        ```yaml
+        bot_token: "${TELEGRAM_BOT_TOKEN}"
+        ```
+
+        ### Base de donnees
+
+        SentinelPi utilise SQLite. La base est dans `data/sentinelpi.db`.
+
+        **Sauvegarde :**
+        ```bash
+        cp data/sentinelpi.db data/backup_$(date +%Y%m%d).db
+        ```
+
+        **Reinitialisation :**
+        Via le dashboard : ⚙️ Config > Base de donnees > Reinitialiser
+        """)
+
+    # =====================================================
+    # TAB: FAQ
+    # =====================================================
+    with tabs[7]:
+        st.subheader("❓ Questions frequentes")
+
+        with st.expander("Comment ajouter un flux RSS ?"):
+            st.markdown("""
+            1. Allez dans **📡 Sources**
+            2. Cliquez sur **➕ Ajouter**
+            3. Entrez le nom et l'URL du flux RSS
+            4. Cliquez sur **Enregistrer**
+            """)
+
+        with st.expander("Pourquoi je ne recois pas d'alertes Telegram ?"):
+            st.markdown("""
+            Verifiez :
+            1. Le bot token est correct (obtenu via @BotFather)
+            2. Le chat ID est correct (obtenu via @userinfobot)
+            3. Vous avez demarre une conversation avec le bot
+            4. Le canal Telegram est active dans la config
+            5. La severite minimum n'est pas trop haute
+            """)
+
+        with st.expander("Comment reduire l'utilisation CPU sur Raspberry Pi ?"):
+            st.markdown("""
+            - Augmentez les intervalles de collecte (ex: 120 min au lieu de 60)
+            - Reduisez `max_concurrent_collectors` a 1 ou 2
+            - Desactivez les sources non essentielles
+            - Utilisez `--once` avec cron au lieu du mode continu
+            """)
+
+        with st.expander("Comment surveiller un concurrent ?"):
+            st.markdown("""
+            1. Ajoutez le flux RSS de leur blog/actualites
+            2. Creez un filtre avec action **alert**
+            3. Mots-cles : nom du concurrent, produits, dirigeants
+            4. Severite : **notice** ou **warning**
+            5. Activez les notifications Telegram ou Email
+            """)
+
+        with st.expander("Puis-je utiliser SentinelPi sans Raspberry Pi ?"):
+            st.markdown("""
+            Oui ! SentinelPi fonctionne sur tout systeme Linux/macOS avec Python 3.11+.
+            L'optimisation Raspberry Pi concerne principalement la consommation memoire.
+            """)
+
+        with st.expander("Comment exporter mes donnees ?"):
+            st.markdown("""
+            - **Sources RSS** : Utilisez l'export OPML
+            - **Base complete** : Copiez `data/sentinelpi.db`
+            - **Rapports** : Generes automatiquement dans `data/reports/`
+            """)
+
+        with st.expander("Le dashboard ne demarre pas, que faire ?"):
+            st.markdown("""
+            ```bash
+            # Verifier les erreurs
+            sentinelpi-dashboard 2>&1 | head -50
+
+            # Verifier que le port 8501 est libre
+            netstat -tlnp | grep 8501
+
+            # Lancer manuellement avec debug
+            streamlit run src/dashboard/app.py --logger.level=debug
+            ```
+            """)
+
+        with st.expander("Comment mettre a jour SentinelPi ?"):
+            st.markdown("""
+            ```bash
+            cd /home/pi/sentinelpi
+            git pull origin main
+            pip install -r requirements.txt
+            sudo systemctl restart sentinelpi
+            ```
+            """)
+
+        with st.expander("J'ai des erreurs 403 sur certaines sources, que faire ?"):
+            st.markdown("""
+            Les erreurs 403 (Forbidden) viennent souvent de WAF (Web Application Firewall)
+            qui bloquent les requetes automatisees.
+
+            **Solutions (du plus simple au plus efficace) :**
+
+            1. **Headers navigateur manuels** (mode sans impersonation) :
+               - ⚙️ Config > Collecte > HTTP / Anti-WAF
+               - Verifiez que les headers imitent un vrai navigateur
+               - User-Agent, Sec-Ch-*, etc.
+
+            2. **Empreinte JA3** (recommande pour les WAF avances) :
+               - ⚙️ Config > Collecte > HTTP / Anti-WAF
+               - Navigateur a imiter : **Chrome** (recommande)
+               - Version : **chrome120**
+               - Installation : `pip install curl_cffi`
+
+            3. **Rate limiting** : Reduisez le rate limit (ex: 0.5 req/s)
+
+            **JA3 vs Headers manuels**
+
+            | Aspect | Headers manuels | Impersonation JA3 |
+            |--------|-----------------|-------------------|
+            | User-Agent | Configure manuellement | Automatique (curl_cffi) |
+            | Headers Sec-* | Configure manuellement | Automatique (curl_cffi) |
+            | Empreinte TLS | Python/OpenSSL standard | Imite le vrai navigateur |
+            | Efficacite | WAF basiques | WAF avances (Cloudflare, etc.) |
+
+            **Important** : Quand l'impersonation JA3 est activee, les headers
+            manuels (User-Agent, Sec-*) sont ignores car curl_cffi les gere
+            automatiquement pour garantir la coherence avec l'empreinte TLS.
+            """)
+
+    # Footer
+    st.divider()
+    st.caption(f"{APP_NAME} - Station de veille multi-sources")
+
+
+def main() -> None:
+    """Main entry point for the dashboard."""
+    # Initialize
+    setup_logging()
+    init_session_state()
+
+    # Custom CSS
+    st.markdown("""
+    <style>
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .stDataFrame {
+        font-size: 14px;
+    }
+    /* Modern sidebar nav buttons */
+    section[data-testid="stSidebar"] .stButton > button {
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 0.45rem 0.75rem !important;
+        font-size: 0.88rem !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        transition: background 0.15s ease !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button:hover {
+        background: rgba(79, 139, 249, 0.10) !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+        background: linear-gradient(90deg, #4f8bf9, #3a6fd8) !important;
+        color: #fff !important;
+        box-shadow: 0 2px 6px rgba(79,139,249,0.3) !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+        background: linear-gradient(90deg, #3a6fd8, #2d5fc0) !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button p {
+        text-align: left !important;
+    }
+    /* Hide default sidebar decoration */
+    section[data-testid="stSidebar"] hr {
+        margin: 0.3rem 0 !important;
+        opacity: 0.15 !important;
+    }
+
+    /* Compact action buttons in feed cards */
+    div[data-testid="column"] .stButton > button,
+    div[data-testid="column"] .stPopover > button {
+        padding: 0.15rem 0 !important;
+        min-height: 1.6rem !important;
+    }
+    div[data-testid="column"] .stButton > button p,
+    div[data-testid="column"] .stPopover > button p {
+        font-size: 0.82rem !important;
+        line-height: 1.2 !important;
+        margin: 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Check if password protection is configured
+    raw = _load_settings_yaml()
+    password_hash = raw.get("dashboard", {}).get("password_hash", "")
+
+    if password_hash:
+        # Password is set, check authentication
+        authenticated = st.session_state.get("authenticated", False)
+        read_only = st.session_state.get("read_only", False)
+
+        if not authenticated and not read_only:
+            render_login_page()
+            return
+    else:
+        # No password set, full access
+        st.session_state.authenticated = True
+        st.session_state.read_only = False
+
+    read_only = st.session_state.get("read_only", False)
+
+    # Render sidebar and get selected page
+    page = render_sidebar()
+
+    # Render selected page
+    if page == "feed":
+        render_feed_page()
+    elif page == "sources" and not read_only:
+        render_sources_page()
+    elif page == "filters" and not read_only:
+        render_filters_page()
+    elif page == "alerts" and not read_only:
+        render_alerts_page()
+    elif page == "stats":
+        render_stats_page()
+    elif page == "settings" and not read_only:
+        render_settings_page()
+    elif page == "docs":
+        render_docs_page()
+    elif read_only and page not in ("feed", "stats", "docs"):
+        st.warning("Acces restreint en mode lecture seule.")
+
+
+if __name__ == "__main__":
+    main()

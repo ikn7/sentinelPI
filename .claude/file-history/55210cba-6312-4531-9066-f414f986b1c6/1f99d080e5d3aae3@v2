@@ -1,0 +1,294 @@
+"""Routes API pour la réglementation."""
+
+from datetime import date, datetime, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select
+
+from src.storage import db
+from src.storage.models import Regulation, RegulationDeadline, RegulationImpact
+
+router = APIRouter()
+
+
+# =============================================================================
+# Modèles Pydantic
+# =============================================================================
+
+class RegulationResponse(BaseModel):
+    """Modèle de réponse pour une réglementation."""
+    id: str
+    type: str
+    numero: Optional[str] = None
+    titre: str
+    titre_court: Optional[str] = None
+    date_signature: Optional[date] = None
+    date_publication: Optional[date] = None
+    date_entree_vigueur: Optional[date] = None
+    source: str
+    url: str
+    resume: Optional[str] = None
+    mots_cles: Optional[list[str]] = None
+    secteurs: Optional[list[str]] = None
+    collected_at: datetime
+
+    class Config:
+        from_attributes = True
+
+    @classmethod
+    def from_orm_with_json(cls, obj: Regulation):
+        """Crée une instance avec parsing des champs JSON."""
+        return cls(
+            id=obj.id,
+            type=obj.type,
+            numero=obj.numero,
+            titre=obj.titre,
+            titre_court=obj.titre_court,
+            date_signature=obj.date_signature,
+            date_publication=obj.date_publication,
+            date_entree_vigueur=obj.date_entree_vigueur,
+            source=obj.source,
+            url=obj.url,
+            resume=obj.resume,
+            mots_cles=obj.get_mots_cles(),
+            secteurs=obj.get_secteurs(),
+            collected_at=obj.collected_at,
+        )
+
+
+class DeadlineResponse(BaseModel):
+    """Modèle de réponse pour une échéance."""
+    id: str
+    regulation_id: str
+    description: str
+    date_echeance: date
+    obligatoire: bool
+    statut: str
+    days_until: Optional[int] = None
+    regulation_titre: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ImpactResponse(BaseModel):
+    """Modèle de réponse pour un impact."""
+    id: str
+    regulation_id: str
+    type_impact: str
+    description: str
+    entites_visees: Optional[str] = None
+    seuils: Optional[str] = None
+    sanctions: Optional[str] = None
+    niveau_criticite: int
+
+    class Config:
+        from_attributes = True
+
+
+class RegulationDetailResponse(RegulationResponse):
+    """Modèle de réponse détaillé pour une réglementation."""
+    contenu_integral: Optional[str] = None
+    impacts: list[ImpactResponse] = []
+    echeances: list[DeadlineResponse] = []
+
+
+# =============================================================================
+# Routes
+# =============================================================================
+
+@router.get("", response_model=list[RegulationResponse])
+async def list_regulations(
+    type: Optional[str] = Query(None, description="Type de texte (loi, decret, arrete...)"),
+    source: Optional[str] = Query(None, description="Source (legifrance, eurlex)"),
+    secteur: Optional[str] = Query(None, description="Secteur concerné"),
+    depuis: Optional[date] = Query(None, description="Date de publication minimale"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Liste les réglementations."""
+    async with db.session() as session:
+        query = select(Regulation).order_by(Regulation.date_publication.desc())
+
+        if type:
+            query = query.where(Regulation.type == type)
+        if source:
+            query = query.where(Regulation.source == source)
+        if depuis:
+            query = query.where(Regulation.date_publication >= depuis)
+        if secteur:
+            query = query.where(Regulation.secteurs.contains(secteur))
+
+        query = query.limit(limit).offset(offset)
+        result = await session.execute(query)
+
+        return [
+            RegulationResponse.from_orm_with_json(r)
+            for r in result.scalars().all()
+        ]
+
+
+@router.get("/types")
+async def get_regulation_types():
+    """Retourne les types de réglementation disponibles."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Regulation.type, func.count(Regulation.id))
+            .group_by(Regulation.type)
+            .order_by(func.count(Regulation.id).desc())
+        )
+
+        return [
+            {"type": row[0], "count": row[1]}
+            for row in result.all()
+        ]
+
+
+@router.get("/deadlines", response_model=list[DeadlineResponse])
+async def get_upcoming_deadlines(
+    days: int = Query(30, ge=1, le=365, description="Nombre de jours à venir"),
+    statut: Optional[str] = Query(None, description="Statut de l'échéance"),
+):
+    """Récupère les échéances réglementaires à venir."""
+    async with db.session() as session:
+        today = date.today()
+        end_date = today + timedelta(days=days)
+
+        query = (
+            select(RegulationDeadline, Regulation.titre)
+            .join(Regulation)
+            .where(
+                RegulationDeadline.date_echeance >= today,
+                RegulationDeadline.date_echeance <= end_date,
+            )
+            .order_by(RegulationDeadline.date_echeance)
+        )
+
+        if statut:
+            query = query.where(RegulationDeadline.statut == statut)
+
+        result = await session.execute(query)
+
+        deadlines = []
+        for row in result.all():
+            deadline, titre = row
+            days_until = (deadline.date_echeance - today).days
+            deadlines.append(DeadlineResponse(
+                id=deadline.id,
+                regulation_id=deadline.regulation_id,
+                description=deadline.description,
+                date_echeance=deadline.date_echeance,
+                obligatoire=deadline.obligatoire,
+                statut=deadline.statut,
+                days_until=days_until,
+                regulation_titre=titre,
+            ))
+
+        return deadlines
+
+
+@router.get("/search")
+async def search_regulations(
+    q: str = Query(..., min_length=2, description="Terme de recherche"),
+    limit: int = Query(20, ge=1, le=50),
+):
+    """Recherche dans les réglementations."""
+    async with db.session() as session:
+        # Recherche dans le titre et le résumé
+        search_pattern = f"%{q}%"
+        result = await session.execute(
+            select(Regulation)
+            .where(
+                (Regulation.titre.ilike(search_pattern)) |
+                (Regulation.resume.ilike(search_pattern)) |
+                (Regulation.mots_cles.ilike(search_pattern))
+            )
+            .order_by(Regulation.date_publication.desc())
+            .limit(limit)
+        )
+
+        return [
+            RegulationResponse.from_orm_with_json(r)
+            for r in result.scalars().all()
+        ]
+
+
+@router.get("/{regulation_id}", response_model=RegulationDetailResponse)
+async def get_regulation(regulation_id: str):
+    """Récupère une réglementation avec ses détails."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Regulation).where(Regulation.id == regulation_id)
+        )
+        regulation = result.scalar_one_or_none()
+
+        if not regulation:
+            raise HTTPException(status_code=404, detail="Réglementation non trouvée")
+
+        # Charger les impacts
+        impacts_result = await session.execute(
+            select(RegulationImpact).where(RegulationImpact.regulation_id == regulation_id)
+        )
+
+        # Charger les échéances
+        deadlines_result = await session.execute(
+            select(RegulationDeadline)
+            .where(RegulationDeadline.regulation_id == regulation_id)
+            .order_by(RegulationDeadline.date_echeance)
+        )
+
+        today = date.today()
+        deadlines = []
+        for d in deadlines_result.scalars().all():
+            days_until = (d.date_echeance - today).days if d.date_echeance >= today else None
+            deadlines.append(DeadlineResponse(
+                id=d.id,
+                regulation_id=d.regulation_id,
+                description=d.description,
+                date_echeance=d.date_echeance,
+                obligatoire=d.obligatoire,
+                statut=d.statut,
+                days_until=days_until,
+            ))
+
+        return RegulationDetailResponse(
+            id=regulation.id,
+            type=regulation.type,
+            numero=regulation.numero,
+            titre=regulation.titre,
+            titre_court=regulation.titre_court,
+            date_signature=regulation.date_signature,
+            date_publication=regulation.date_publication,
+            date_entree_vigueur=regulation.date_entree_vigueur,
+            source=regulation.source,
+            url=regulation.url,
+            resume=regulation.resume,
+            contenu_integral=regulation.contenu_integral,
+            mots_cles=regulation.get_mots_cles(),
+            secteurs=regulation.get_secteurs(),
+            collected_at=regulation.collected_at,
+            impacts=list(impacts_result.scalars().all()),
+            echeances=deadlines,
+        )
+
+
+@router.get("/by-sector/{sector_id}")
+async def get_regulations_by_sector(
+    sector_id: str,
+    limit: int = Query(50, ge=1, le=100),
+):
+    """Récupère les réglementations par secteur."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(Regulation)
+            .where(Regulation.secteurs.contains(sector_id))
+            .order_by(Regulation.date_publication.desc())
+            .limit(limit)
+        )
+
+        return [
+            RegulationResponse.from_orm_with_json(r)
+            for r in result.scalars().all()
+        ]

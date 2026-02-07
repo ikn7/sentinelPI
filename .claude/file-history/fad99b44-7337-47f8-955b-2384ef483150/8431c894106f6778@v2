@@ -1,0 +1,55 @@
+app:
+  name: Sentinel Pi
+  version: 1.0.1
+  timezone: Europe/Paris
+database:
+  path: data/sentinelpi.db
+  echo: false
+http:
+  timeout: 30
+  max_retries: 3
+  retry_delay: 5
+  user_agent: SentinelPi/1.0 (Raspberry Pi; Monitoring Bot)
+  rate_limit: 2
+  cache:
+    enabled: true
+    directory: data/cache
+    ttl_seconds: 300
+collection:
+  default_interval_minutes: 60
+  max_concurrent_collectors: 3
+  max_items_per_source: 100
+  dedup_window_days: 30
+  collector_timeout: 120
+processing:
+  extract_keywords: true
+  max_keywords: 10
+  detect_language: true
+  analyze_sentiment: false
+  summarize: false
+  summarize_max_length: 200
+scheduler:
+  enabled: true
+  check_interval_seconds: 60
+  daily_report_time: 08:00
+  weekly_report_day: 0
+  weekly_report_time: 09:00
+dashboard:
+  enabled: true
+  host: 0.0.0.0
+  port: 8501
+  items_per_page: 50
+  auto_refresh_seconds: 60
+  password_hash: ''
+logging:
+  level: INFO
+  file: logs/sentinelpi.log
+  rotation: 10 MB
+  retention: 30 days
+  format: '{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {name}:{function}:{line} | {message}'
+  colorize: true
+maintenance:
+  cleanup_enabled: true
+  retention_days: 90
+  cleanup_time: 03:00
+  vacuum_enabled: true

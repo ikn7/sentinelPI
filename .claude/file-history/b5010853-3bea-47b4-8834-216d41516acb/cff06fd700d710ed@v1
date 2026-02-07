@@ -1,0 +1,456 @@
+"""
+Filters component for the SentinelPi dashboard.
+
+Provides UI for viewing and managing filter rules.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Sequence
+
+import streamlit as st
+
+from src.storage.models import Filter, FilterAction
+
+
+def _run_async(coro):
+    """Run async coroutine from sync context."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
+async def _toggle_filter(filter_id: str, current_enabled: bool) -> None:
+    """Toggle filter enabled state in the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import update
+
+    async with get_session() as session:
+        await session.execute(
+            update(Filter)
+            .where(Filter.id == filter_id)
+            .values(enabled=not current_enabled)
+        )
+        await session.commit()
+
+
+async def _delete_filter(filter_id: str) -> None:
+    """Delete a filter from the database."""
+    from src.storage.database import get_session
+    from sqlalchemy import delete
+
+    async with get_session() as session:
+        await session.execute(delete(Filter).where(Filter.id == filter_id))
+        await session.commit()
+
+
+def get_action_badge(action: str | FilterAction) -> str:
+    """Get badge for filter action."""
+    if isinstance(action, FilterAction):
+        action = action.value
+
+    badges = {
+        "include": ("✅", "Inclure", "#28a745"),
+        "exclude": ("🚫", "Exclure", "#dc3545"),
+        "highlight": ("⭐", "Mettre en avant", "#ffc107"),
+        "tag": ("🏷️", "Ajouter tag", "#17a2b8"),
+        "alert": ("🔔", "Alerter", "#6f42c1"),
+    }
+
+    emoji, label, color = badges.get(action, ("📋", action, "#6c757d"))
+    return f"{emoji} {label}"
+
+
+def render_filter_card(
+    filter_obj: Filter | dict[str, Any],
+    show_actions: bool = True,
+    expanded: bool = False,
+) -> None:
+    """
+    Render a filter as a card.
+
+    Args:
+        filter_obj: Filter object or dictionary.
+        show_actions: Whether to show action buttons.
+        expanded: Whether to show expanded details.
+    """
+    # Handle both Filter objects and dicts
+    if isinstance(filter_obj, dict):
+        filter_id = filter_obj.get("id", "")
+        name = filter_obj.get("name", "Filtre sans nom")
+        description = filter_obj.get("description", "")
+        action = filter_obj.get("action", "include")
+        action_params = filter_obj.get("action_params", {})
+        conditions = filter_obj.get("conditions", {})
+        score_modifier = filter_obj.get("score_modifier", 0)
+        enabled = filter_obj.get("enabled", True)
+        priority = filter_obj.get("priority", 100)
+    else:
+        filter_id = filter_obj.id
+        name = filter_obj.name
+        description = filter_obj.description or ""
+        action = filter_obj.action.value if isinstance(filter_obj.action, FilterAction) else filter_obj.action
+        action_params = filter_obj.action_params or {}
+        conditions = filter_obj.conditions or {}
+        score_modifier = filter_obj.score_modifier
+        enabled = filter_obj.enabled
+        priority = filter_obj.priority
+
+    with st.container():
+        # Header
+        col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+
+        with col1:
+            status_icon = "✅" if enabled else "⏸️"
+            st.markdown(f"{status_icon} **{name}**")
+
+        with col2:
+            st.markdown(get_action_badge(action))
+
+        with col3:
+            if score_modifier != 0:
+                sign = "+" if score_modifier > 0 else ""
+                st.caption(f"Score: {sign}{score_modifier}")
+
+        with col4:
+            st.caption(f"P: {priority}")
+
+        # Description
+        if description:
+            st.caption(description)
+
+        # Conditions summary
+        conditions_summary = _format_conditions_summary(conditions)
+        if conditions_summary:
+            st.code(conditions_summary, language=None)
+
+        # Action params
+        if action_params:
+            if action == "alert":
+                severity = action_params.get("severity", "notice")
+                st.caption(f"🔔 Sévérité: {severity}")
+            elif action == "tag":
+                tag = action_params.get("tag", "")
+                st.caption(f"🏷️ Tag: {tag}")
+
+        # Expanded details
+        if expanded:
+            with st.expander("📋 Détails complets"):
+                st.json(conditions)
+
+        # Actions
+        if show_actions:
+            col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
+
+            with col1:
+                toggle_label = "▶️" if not enabled else "⏸️"
+                toggle_help = "Activer" if not enabled else "Désactiver"
+                if st.button(toggle_label, key=f"toggle_filter_{filter_id}", help=toggle_help):
+                    _run_async(_toggle_filter(filter_id, enabled))
+                    status = "désactivé" if enabled else "activé"
+                    st.toast(f"Filtre {status}")
+                    st.rerun()
+
+            with col2:
+                if st.button("✏️", key=f"edit_filter_{filter_id}", help="Modifier"):
+                    st.session_state[f"edit_filter_{filter_id}"] = True
+
+            with col3:
+                if st.button("🗑️", key=f"delete_filter_{filter_id}", help="Supprimer"):
+                    _run_async(_delete_filter(filter_id))
+                    st.toast("Filtre supprimé")
+                    st.rerun()
+
+        st.divider()
+
+
+def _format_conditions_summary(conditions: dict[str, Any]) -> str:
+    """Format conditions as a readable summary."""
+    if not conditions:
+        return ""
+
+    cond_type = conditions.get("type", "keywords")
+    field = conditions.get("field", "all")
+    operator = conditions.get("operator", "contains")
+    value = conditions.get("value", [])
+
+    if cond_type == "keywords":
+        if isinstance(value, list):
+            keywords = ", ".join(value[:5])
+            if len(value) > 5:
+                keywords += f" (+{len(value) - 5})"
+        else:
+            keywords = value
+        return f"[{field}] {operator}: {keywords}"
+
+    elif cond_type == "regex":
+        return f"[{field}] regex: {value}"
+
+    elif cond_type == "compound":
+        logic = conditions.get("logic", "and")
+        sub_conditions = conditions.get("conditions", [])
+        return f"{logic.upper()} ({len(sub_conditions)} conditions)"
+
+    return str(conditions)[:100]
+
+
+def render_filters_table(
+    filters: Sequence[Filter | dict[str, Any]],
+) -> None:
+    """
+    Render filters as a table.
+
+    Args:
+        filters: List of filters to display.
+    """
+    if not filters:
+        st.info("📭 Aucun filtre configuré.", icon="ℹ️")
+        return
+
+    # Prepare data
+    data = []
+    for f in filters:
+        if isinstance(f, dict):
+            row = {
+                "Actif": "✅" if f.get("enabled", True) else "⏸️",
+                "Nom": f.get("name", ""),
+                "Action": get_action_badge(f.get("action", "include")),
+                "Score": f"{f.get('score_modifier', 0):+}",
+                "Priorité": f.get("priority", 100),
+            }
+        else:
+            row = {
+                "Actif": "✅" if f.enabled else "⏸️",
+                "Nom": f.name,
+                "Action": get_action_badge(f.action),
+                "Score": f"{f.score_modifier:+}",
+                "Priorité": f.priority,
+            }
+        data.append(row)
+
+    st.dataframe(data, use_container_width=True, hide_index=True)
+
+
+def render_add_filter_form() -> dict[str, Any] | None:
+    """
+    Render the add filter form.
+
+    Returns:
+        Filter config dict if submitted, None otherwise.
+    """
+    with st.form("add_filter"):
+        st.subheader("➕ Nouveau filtre")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            name = st.text_input(
+                "Nom du filtre",
+                placeholder="Mon nouveau filtre",
+            )
+
+            description = st.text_area(
+                "Description",
+                placeholder="Ce filtre permet de...",
+                height=80,
+            )
+
+            action = st.selectbox(
+                "Action",
+                options=["include", "exclude", "highlight", "tag", "alert"],
+                format_func=lambda x: get_action_badge(x),
+            )
+
+        with col2:
+            # Condition type
+            cond_type = st.selectbox(
+                "Type de condition",
+                options=["keywords", "regex", "compound"],
+                format_func=lambda x: {
+                    "keywords": "🔤 Mots-clés",
+                    "regex": "📝 Expression régulière",
+                    "compound": "🔗 Conditions composées",
+                }.get(x, x),
+            )
+
+            field = st.selectbox(
+                "Champ à analyser",
+                options=["all", "title", "content", "author"],
+                format_func=lambda x: {
+                    "all": "📄 Tous les champs",
+                    "title": "📰 Titre uniquement",
+                    "content": "📝 Contenu uniquement",
+                    "author": "✍️ Auteur uniquement",
+                }.get(x, x),
+            )
+
+            score_modifier = st.slider(
+                "Modificateur de score",
+                min_value=-100,
+                max_value=100,
+                value=0,
+                step=5,
+            )
+
+            priority = st.number_input(
+                "Priorité",
+                min_value=1,
+                max_value=1000,
+                value=100,
+                help="Plus bas = plus prioritaire",
+            )
+
+        # Condition value based on type
+        st.divider()
+
+        if cond_type == "keywords":
+            keywords_input = st.text_area(
+                "Mots-clés (un par ligne ou séparés par virgules)",
+                placeholder="mot1\nmot2\nmot3",
+                height=100,
+            )
+            operator = st.selectbox(
+                "Opérateur",
+                options=["contains", "not_contains", "equals"],
+                format_func=lambda x: {
+                    "contains": "Contient",
+                    "not_contains": "Ne contient pas",
+                    "equals": "Égal à",
+                }.get(x, x),
+            )
+            case_sensitive = st.checkbox("Sensible à la casse")
+
+        elif cond_type == "regex":
+            regex_pattern = st.text_input(
+                "Pattern regex",
+                placeholder=r"\d+\s*€|EUR",
+            )
+            operator = "matches"
+            case_sensitive = st.checkbox("Sensible à la casse")
+
+        # Action params
+        if action == "tag":
+            tag_name = st.text_input("Nom du tag", placeholder="mon-tag")
+        elif action == "alert":
+            alert_severity = st.selectbox(
+                "Sévérité de l'alerte",
+                options=["info", "notice", "warning", "critical"],
+            )
+
+        # Submit
+        col1, col2 = st.columns(2)
+
+        with col1:
+            submitted = st.form_submit_button("💾 Enregistrer", use_container_width=True)
+
+        with col2:
+            cancelled = st.form_submit_button("❌ Annuler", use_container_width=True)
+
+        if cancelled:
+            return None
+
+        if submitted:
+            if not name:
+                st.error("Le nom est requis.")
+                return None
+
+            # Build conditions
+            conditions = {
+                "type": cond_type,
+                "field": field,
+            }
+
+            if cond_type == "keywords":
+                # Parse keywords
+                keywords = []
+                for line in keywords_input.split("\n"):
+                    for kw in line.split(","):
+                        kw = kw.strip()
+                        if kw:
+                            keywords.append(kw)
+
+                if not keywords:
+                    st.error("Au moins un mot-clé est requis.")
+                    return None
+
+                conditions["operator"] = operator
+                conditions["value"] = keywords
+                conditions["case_sensitive"] = case_sensitive
+
+            elif cond_type == "regex":
+                if not regex_pattern:
+                    st.error("Le pattern regex est requis.")
+                    return None
+
+                conditions["operator"] = "matches"
+                conditions["value"] = regex_pattern
+                conditions["case_sensitive"] = case_sensitive
+
+            # Build action params
+            action_params = {}
+            if action == "tag":
+                action_params["tag"] = tag_name
+            elif action == "alert":
+                action_params["severity"] = alert_severity
+
+            return {
+                "name": name,
+                "description": description,
+                "action": action,
+                "action_params": action_params,
+                "conditions": conditions,
+                "score_modifier": score_modifier,
+                "priority": priority,
+                "enabled": True,
+            }
+
+    return None
+
+
+def render_filter_stats(filters: Sequence[Filter | dict[str, Any]]) -> None:
+    """
+    Render filter statistics.
+
+    Args:
+        filters: List of filters.
+    """
+    if not filters:
+        return
+
+    # Count by action
+    action_counts: dict[str, int] = {}
+    enabled_count = 0
+
+    for f in filters:
+        if isinstance(f, dict):
+            action = f.get("action", "include")
+            enabled = f.get("enabled", True)
+        else:
+            action = f.action.value if isinstance(f.action, FilterAction) else f.action
+            enabled = f.enabled
+
+        action_counts[action] = action_counts.get(action, 0) + 1
+        if enabled:
+            enabled_count += 1
+
+    # Display
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        st.metric("Total", len(filters))
+
+    with col2:
+        st.metric("Actifs", enabled_count)
+
+    with col3:
+        st.metric("🔔 Alertes", action_counts.get("alert", 0))
+
+    with col4:
+        st.metric("🚫 Exclusions", action_counts.get("exclude", 0))
+
+    with col5:
+        st.metric("🏷️ Tags", action_counts.get("tag", 0))

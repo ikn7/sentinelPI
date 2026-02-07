@@ -1,0 +1,188 @@
+# StratWatch
+
+**Plateforme de veille stratégique pour l'intelligence économique**
+
+StratWatch est une solution complète de veille concurrentielle et réglementaire conçue pour fonctionner sur Raspberry Pi. Elle collecte, analyse et alerte sur l'environnement concurrentiel et réglementaire de votre entreprise.
+
+## Fonctionnalités
+
+### Veille concurrentielle
+- **Données légales** : Informations entreprises via Pappers (SIREN, dirigeants, finances)
+- **Annonces légales** : Surveillance BODACC (procédures collectives, cessions, etc.)
+- **Propriété intellectuelle** : Brevets et marques via INPI
+- **Recrutement** : Offres d'emploi des concurrents
+- **Presse** : Mentions médiatiques et analyse de sentiment
+
+### Veille réglementaire
+- **Légifrance** : Textes de loi français
+- **EUR-Lex** : Réglementation européenne
+- **Échéances** : Suivi des dates d'entrée en vigueur
+- **Impact** : Analyse des implications pour votre activité
+
+### Alertes et reporting
+- **Notifications temps réel** : Telegram, email, webhooks
+- **Rapports automatiques** : PDF, HTML, Markdown
+- **Dashboard** : Interface web de consultation
+- **API REST** : Intégration avec vos outils
+
+## Prérequis
+
+- Raspberry Pi 4 ou 5 (4 Go RAM minimum recommandé)
+- Raspberry Pi OS (Debian Bookworm)
+- Python 3.11+
+- Connexion Internet
+
+## Installation rapide
+
+```bash
+# Cloner le projet
+git clone https://github.com/votre-repo/stratwatch.git
+cd stratwatch
+
+# Lancer le script d'installation
+./scripts/install.sh
+```
+
+## Installation manuelle
+
+```bash
+# Créer l'environnement virtuel
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Installer les dépendances
+pip install -e .
+
+# Installer le modèle spaCy français
+python -m spacy download fr_core_news_md
+
+# Copier et configurer l'environnement
+cp .env.example .env
+nano .env
+
+# Initialiser la base de données
+stratwatch db init
+```
+
+## Configuration
+
+### 1. Variables d'environnement
+
+Éditez le fichier `.env` avec vos clés API :
+
+```bash
+PAPPERS_API_KEY=votre_cle_pappers
+TELEGRAM_BOT_TOKEN=votre_token_telegram
+TELEGRAM_CHAT_ID=votre_chat_id
+```
+
+### 2. Concurrents à surveiller
+
+Éditez `config/competitors.yaml` :
+
+```yaml
+competitors:
+  - siren: "123456789"
+    nom: "Concurrent A"
+    priorite: 1
+    site_web: "https://exemple.com"
+```
+
+### 3. Secteurs réglementaires
+
+Activez les secteurs pertinents dans `config/sectors.yaml`.
+
+## Utilisation
+
+### Lancer une collecte manuelle
+
+```bash
+# Collecter toutes les données
+stratwatch collect all
+
+# Collecter uniquement les données légales
+stratwatch collect legal
+
+# Collecter les actualités
+stratwatch collect news
+```
+
+### Démarrer le dashboard
+
+```bash
+stratwatch dashboard
+# Accessible sur http://localhost:8501
+```
+
+### Démarrer l'API
+
+```bash
+stratwatch api
+# Accessible sur http://localhost:8000
+# Documentation : http://localhost:8000/docs
+```
+
+### Générer un rapport
+
+```bash
+# Rapport hebdomadaire
+stratwatch report weekly
+
+# Rapport sur un concurrent
+stratwatch report competitor --siren 123456789
+```
+
+## Automatisation (cron)
+
+```bash
+# Configurer les tâches planifiées
+./scripts/setup_cron.sh
+```
+
+Tâches par défaut :
+- Données légales : 1x/jour à 6h
+- Offres d'emploi : 4x/jour
+- Actualités : 1x/heure
+- Réglementation : 2x/jour
+- Rapport hebdomadaire : lundi 8h
+
+## Architecture
+
+```
+stratwatch/
+├── config/           # Fichiers de configuration YAML
+├── src/
+│   ├── collectors/   # Modules de collecte de données
+│   ├── processors/   # Traitement et analyse NLP
+│   ├── storage/      # Base de données et modèles
+│   ├── alerting/     # Moteur d'alertes et notifications
+│   ├── reporting/    # Génération de rapports
+│   ├── api/          # API REST FastAPI
+│   ├── dashboard/    # Interface web Streamlit
+│   └── utils/        # Utilitaires communs
+├── data/             # Données collectées et exports
+├── logs/             # Journaux d'exécution
+└── tests/            # Tests unitaires et intégration
+```
+
+## Développement
+
+```bash
+# Installer les dépendances de développement
+pip install -e ".[dev]"
+
+# Lancer les tests
+pytest
+
+# Vérifier le code
+ruff check src/
+mypy src/
+```
+
+## Support
+
+Pour signaler un bug ou proposer une amélioration, ouvrez une issue sur le dépôt GitHub.
+
+## Licence
+
+MIT License - Voir [LICENSE](LICENSE) pour plus de détails.

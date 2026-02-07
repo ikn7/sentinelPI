@@ -1,0 +1,100 @@
+2026-02-07T09:50:19.324Z [DEBUG] [init] configureGlobalMTLS starting
+2026-02-07T09:50:19.325Z [DEBUG] [init] configureGlobalMTLS complete
+2026-02-07T09:50:19.325Z [DEBUG] [init] configureGlobalAgents starting
+2026-02-07T09:50:19.325Z [DEBUG] [init] configureGlobalAgents complete
+2026-02-07T09:50:19.345Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-02-07T09:50:19.362Z [DEBUG] [ToolSearch:optimistic] mode=tst-auto, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-02-07T09:50:19.366Z [DEBUG] [STARTUP] Running setup()...
+2026-02-07T09:50:19.367Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-02-07T09:50:19.371Z [DEBUG] Loading skills from: managed=/etc/claude-code/.claude/skills, user=/home/user/.claude/skills, project=[]
+2026-02-07T09:50:19.374Z [DEBUG] Passes: Cache stale, returning cached data and refreshing in background
+2026-02-07T09:50:19.376Z [DEBUG] Error log sink initialized
+2026-02-07T09:50:19.414Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-02-07T09:50:19.414Z [DEBUG] Total plugin skills loaded: 0
+2026-02-07T09:50:19.414Z [DEBUG] Total plugin commands loaded: 0
+2026-02-07T09:50:19.415Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-02-07T09:50:19.436Z [DEBUG] Loaded 0 unique skills (managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-02-07T09:50:19.442Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 2 bundled skills
+2026-02-07T09:50:19.458Z [DEBUG] Acquired PID lock for 2.1.32 (PID 201197)
+2026-02-07T09:50:19.458Z [DEBUG] Acquired PID lock on running version: /home/user/.local/share/claude/versions/2.1.32
+2026-02-07T09:50:19.489Z [DEBUG] [Claude in Chrome] Extension not found in any browser
+2026-02-07T09:50:19.615Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.201197.1770457819615
+2026-02-07T09:50:19.615Z [DEBUG] Preserving file permissions: 100600
+2026-02-07T09:50:19.624Z [DEBUG] Temp file written successfully, size: 6747 bytes
+2026-02-07T09:50:19.624Z [DEBUG] Applied original permissions to temp file
+2026-02-07T09:50:19.624Z [DEBUG] Renaming /home/user/.claude.json.tmp.201197.1770457819615 to /home/user/.claude.json
+2026-02-07T09:50:19.624Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-07T09:50:19.640Z [DEBUG] [STARTUP] setup() completed in 274ms
+2026-02-07T09:50:19.640Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-02-07T09:50:19.645Z [DEBUG] Total plugin agents loaded: 0
+2026-02-07T09:50:19.646Z [DEBUG] [STARTUP] Commands and agents loaded in 6ms
+2026-02-07T09:50:19.646Z [DEBUG] [STARTUP] Running showSetupScreens()...
+2026-02-07T09:50:19.650Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-02-07T09:50:19.656Z [DEBUG] Grove: Using fresh cached config
+2026-02-07T09:50:19.657Z [DEBUG] [render] initLayout starting
+2026-02-07T09:50:19.657Z [DEBUG] Layout engine: yoga
+2026-02-07T09:50:19.662Z [DEBUG] Git remote URL: null
+2026-02-07T09:50:19.662Z [DEBUG] No git remote URL found
+2026-02-07T09:50:19.662Z [DEBUG] Not in a GitHub repository, skipping path mapping update
+2026-02-07T09:50:19.683Z [DEBUG] [render] initLayout complete
+2026-02-07T09:50:19.707Z [DEBUG] [keybindings] KeybindingSetup initialized with 100 bindings, 0 warnings
+2026-02-07T09:50:19.731Z [DEBUG] [render] first ink render: 2154ms since process start
+2026-02-07T09:50:19.733Z [DEBUG] [keybindings] Watching for changes to /home/user/.claude/keybindings.json
+2026-02-07T09:50:19.741Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.201197.1770457819741
+2026-02-07T09:50:19.741Z [DEBUG] Preserving file permissions: 100600
+2026-02-07T09:50:19.748Z [DEBUG] Temp file written successfully, size: 6747 bytes
+2026-02-07T09:50:19.748Z [DEBUG] Applied original permissions to temp file
+2026-02-07T09:50:19.748Z [DEBUG] Renaming /home/user/.claude.json.tmp.201197.1770457819741 to /home/user/.claude.json
+2026-02-07T09:50:19.748Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-07T09:50:19.748Z [DEBUG] Passes eligibility cached for org 560ee143-8a6c-4225-bcd7-936921799108: true
+2026-02-07T09:50:19.951Z [DEBUG] [STARTUP] showSetupScreens() completed in 305ms
+2026-02-07T09:50:19.953Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-02-07T09:50:19.953Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-02-07T09:50:19.953Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-02-07T09:50:19.955Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-02-07T09:50:19.955Z [DEBUG] [API:auth] OAuth token check starting
+2026-02-07T09:50:19.960Z [DEBUG] Passes: Using fresh cached eligibility data
+2026-02-07T09:50:19.962Z [DEBUG] Total LSP servers loaded: 0
+2026-02-07T09:50:19.962Z [DEBUG] [STARTUP] MCP configs loaded in 617ms
+2026-02-07T09:50:19.973Z [DEBUG] [Reconnection] computeInitialTeamContext: No teammate context set (not a teammate)
+2026-02-07T09:50:19.978Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.201197.1770457819978
+2026-02-07T09:50:19.978Z [DEBUG] Preserving file permissions: 100600
+2026-02-07T09:50:19.988Z [DEBUG] Temp file written successfully, size: 6747 bytes
+2026-02-07T09:50:19.988Z [DEBUG] Applied original permissions to temp file
+2026-02-07T09:50:19.988Z [DEBUG] Renaming /home/user/.claude.json.tmp.201197.1770457819978 to /home/user/.claude.json
+2026-02-07T09:50:19.988Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-07T09:50:19.992Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-02-07T09:50:19.992Z [DEBUG] LSP manager initialized with 0 servers
+2026-02-07T09:50:19.995Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-02-07T09:50:19.996Z [DEBUG] Found 0 hook matchers in settings
+2026-02-07T09:50:19.996Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-02-07T09:50:19.997Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-02-07T09:50:19.998Z [DEBUG] Initialized versioned plugins system with 0 plugins
+2026-02-07T09:50:19.998Z [DEBUG] LSP server manager initialized successfully
+2026-02-07T09:50:19.998Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-02-07T09:50:20.002Z [DEBUG] [API:auth] OAuth token check complete
+2026-02-07T09:50:20.131Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-02-07T09:50:20.131Z [DEBUG] [API:auth] OAuth token check starting
+2026-02-07T09:50:20.132Z [DEBUG] [API:auth] OAuth token check complete
+2026-02-07T09:50:20.146Z [DEBUG] Writing to temp file: /home/user/.claude.json.tmp.201197.1770457820146
+2026-02-07T09:50:20.146Z [DEBUG] Preserving file permissions: 100600
+2026-02-07T09:50:20.154Z [DEBUG] Temp file written successfully, size: 6747 bytes
+2026-02-07T09:50:20.154Z [DEBUG] Applied original permissions to temp file
+2026-02-07T09:50:20.154Z [DEBUG] Renaming /home/user/.claude.json.tmp.201197.1770457820146 to /home/user/.claude.json
+2026-02-07T09:50:20.154Z [DEBUG] File /home/user/.claude.json written atomically
+2026-02-07T09:50:20.314Z [DEBUG] FileHistory: Copied backup 08631974ad19b07e@v2 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.314Z [DEBUG] FileHistory: Copied backup e2d22911aecfe6b4@v2 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.314Z [DEBUG] FileHistory: Copied backup d681863067987942@v2 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.314Z [DEBUG] FileHistory: Copied backup 74b88694e54ed55b@v2 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.314Z [DEBUG] FileHistory: Copied backup 18e96afc8635c99f@v3 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.314Z [DEBUG] FileHistory: Copied backup 47d9c6a84cd3ae3f@v2 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup 8431c894106f6778@v2 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup 10b8bc5adb031645@v5 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup 6df9f74bdcfeef53@v2 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup cff06fd700d710ed@v1 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup 63ca559e1beb1ff5@v1 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup 0d39c3fb2d32449e@v1 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup 28e0b30e3cc2c20b@v1 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.315Z [DEBUG] FileHistory: Copied backup 23d140d8d1b03d36@v1 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.317Z [DEBUG] FileHistory: Copied backup e2d22911aecfe6b4@v3 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb
+2026-02-07T09:50:20.317Z [DEBUG] FileHistory: Copied backup 18e96afc8635c99f@v4 from session 4c410970-27cf-44b9-9a7b-538f37bf2d48 to b5010853-3bea-47b4-8834-216d41516acb

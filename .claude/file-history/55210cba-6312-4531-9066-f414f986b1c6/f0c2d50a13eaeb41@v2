@@ -1,0 +1,262 @@
+"""Tests pour le collecteur Pappers."""
+
+import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
+
+# Données de test simulant une réponse de l'API Pappers
+MOCK_COMPANY_RESPONSE = {
+    "siren": "123456789",
+    "nom_entreprise": "Test Company SAS",
+    "nom_commercial": "TestCo",
+    "forme_juridique": "SAS",
+    "date_creation": "2020-01-15",
+    "capital": 100000,
+    "code_naf": "6201Z",
+    "siege": {
+        "siret": "12345678900001",
+        "adresse_ligne_1": "123 Rue de Test",
+        "adresse_ligne_2": "",
+        "code_postal": "75001",
+        "ville": "Paris",
+    },
+    "representants": [
+        {
+            "nom": "Dupont",
+            "prenom": "Jean",
+            "qualite": "Président",
+            "date_prise_de_poste": "2020-01-15",
+        },
+        {
+            "nom": "Martin",
+            "prenom": "Marie",
+            "qualite": "Directeur Général",
+            "date_prise_de_poste": "2021-06-01",
+        },
+    ],
+    "finances": [
+        {
+            "annee": 2023,
+            "chiffre_affaires": 5000000,
+            "resultat": 250000,
+            "effectif": 45,
+        },
+        {
+            "annee": 2022,
+            "chiffre_affaires": 4000000,
+            "resultat": 180000,
+            "effectif": 38,
+        },
+    ],
+}
+
+MOCK_SEARCH_RESPONSE = {
+    "resultats": [
+        {
+            "siren": "123456789",
+            "nom_entreprise": "Test Company SAS",
+            "forme_juridique": "SAS",
+            "code_naf": "6201Z",
+            "siege": {"ville": "Paris"},
+        },
+        {
+            "siren": "987654321",
+            "nom_entreprise": "Another Test SARL",
+            "forme_juridique": "SARL",
+            "code_naf": "6202A",
+            "siege": {"ville": "Lyon"},
+        },
+    ]
+}
+
+
+class TestPappersCollector:
+    """Tests pour PappersCollector."""
+
+    @pytest.fixture
+    def mock_settings(self, monkeypatch):
+        """Mock des settings avec une clé API."""
+        mock_settings = MagicMock()
+        mock_settings.pappers_api_key = "test_api_key"
+        mock_settings.collection.rate_limits.pappers = 10
+        mock_settings.collection.rate_limits.default = 10
+        mock_settings.collection.retry.max_attempts = 3
+        mock_settings.collection.retry.base_delay = 1
+        mock_settings.collection.retry.max_delay = 10
+        mock_settings.app.version = "1.0.0"
+
+        with patch("src.collectors.pappers.get_settings", return_value=mock_settings):
+            with patch("src.utils.http.get_settings", return_value=mock_settings):
+                yield mock_settings
+
+    @pytest.fixture
+    def collector(self, mock_settings):
+        """Crée une instance du collecteur."""
+        from src.collectors.pappers import PappersCollector
+        return PappersCollector()
+
+    def test_parse_company_data(self, collector):
+        """Test du parsing des données d'entreprise."""
+        result = collector._parse_company_data(MOCK_COMPANY_RESPONSE)
+
+        assert result.siren == "123456789"
+        assert result.nom == "Test Company SAS"
+        assert result.nom_commercial == "TestCo"
+        assert result.forme_juridique == "SAS"
+        assert result.capital_social == 100000
+        assert result.code_naf == "6201Z"
+        assert result.siret_siege == "12345678900001"
+        assert "123 Rue de Test" in result.adresse_siege
+        assert "75001 Paris" in result.adresse_siege
+
+    def test_parse_dirigeants(self, collector):
+        """Test du parsing des dirigeants."""
+        result = collector._parse_company_data(MOCK_COMPANY_RESPONSE)
+
+        assert len(result.dirigeants) == 2
+        assert result.dirigeants[0]["nom"] == "Dupont"
+        assert result.dirigeants[0]["prenom"] == "Jean"
+        assert result.dirigeants[0]["fonction"] == "Président"
+        assert result.dirigeants[1]["nom"] == "Martin"
+        assert result.dirigeants[1]["fonction"] == "Directeur Général"
+
+    def test_parse_finances(self, collector):
+        """Test du parsing des données financières."""
+        result = collector._parse_company_data(MOCK_COMPANY_RESPONSE)
+
+        assert len(result.finances) == 2
+        assert result.finances[0]["annee"] == 2023
+        assert result.finances[0]["chiffre_affaires"] == 5000000
+        assert result.finances[0]["resultat_net"] == 250000
+        assert result.finances[0]["effectif"] == 45
+
+    def test_parse_date_valid(self, collector):
+        """Test du parsing d'une date valide."""
+        from datetime import date
+        result = collector._parse_date("2020-01-15")
+        assert result == date(2020, 1, 15)
+
+    def test_parse_date_invalid(self, collector):
+        """Test du parsing d'une date invalide."""
+        result = collector._parse_date("invalid-date")
+        assert result is None
+
+    def test_parse_date_none(self, collector):
+        """Test du parsing d'une date None."""
+        result = collector._parse_date(None)
+        assert result is None
+
+    def test_check_api_key_missing(self, monkeypatch):
+        """Test de la vérification de clé API manquante."""
+        mock_settings = MagicMock()
+        mock_settings.pappers_api_key = ""
+        mock_settings.collection.rate_limits.pappers = 10
+        mock_settings.collection.rate_limits.default = 10
+        mock_settings.collection.retry.max_attempts = 3
+        mock_settings.collection.retry.base_delay = 1
+        mock_settings.collection.retry.max_delay = 10
+        mock_settings.app.version = "1.0.0"
+
+        with patch("src.collectors.pappers.get_settings", return_value=mock_settings):
+            with patch("src.utils.http.get_settings", return_value=mock_settings):
+                from src.collectors.pappers import PappersCollector
+                collector = PappersCollector()
+
+                with pytest.raises(ValueError, match="Clé API Pappers non configurée"):
+                    collector._check_api_key()
+
+    @pytest.mark.asyncio
+    async def test_fetch_company_success(self, collector, mock_settings):
+        """Test de la récupération réussie d'une entreprise."""
+        with patch.object(collector.client, "get_json", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MOCK_COMPANY_RESPONSE
+
+            result = await collector._fetch_company("123456789")
+
+            assert result is not None
+            assert result.siren == "123456789"
+            assert result.nom == "Test Company SAS"
+            mock_get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_collect_for_competitor(self, collector, mock_settings):
+        """Test de la collecte pour un concurrent."""
+        with patch.object(collector, "_fetch_company", new_callable=AsyncMock) as mock_fetch:
+            from src.collectors.pappers import PappersCompanyData
+            mock_fetch.return_value = PappersCompanyData(
+                siren="123456789",
+                nom="Test Company",
+            )
+
+            results = await collector.collect_for_competitor("123456789")
+
+            assert len(results) == 1
+            assert results[0].siren == "123456789"
+            assert results[0].nom == "Test Company"
+
+    @pytest.mark.asyncio
+    async def test_collect_for_competitor_not_found(self, collector, mock_settings):
+        """Test de la collecte pour un concurrent non trouvé."""
+        with patch.object(collector, "_fetch_company", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = None
+
+            results = await collector.collect_for_competitor("000000000")
+
+            assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_companies(self, collector, mock_settings):
+        """Test de la recherche d'entreprises."""
+        with patch.object(collector.client, "get_json", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MOCK_SEARCH_RESPONSE
+
+            results = await collector.search_companies("test", limit=10)
+
+            assert len(results) == 2
+            assert results[0]["siren"] == "123456789"
+            assert results[0]["nom"] == "Test Company SAS"
+            assert results[1]["siren"] == "987654321"
+
+
+class TestCollectionResult:
+    """Tests pour CollectionResult."""
+
+    def test_creation(self):
+        """Test de la création d'un résultat."""
+        from src.collectors.base import CollectionResult
+
+        result = CollectionResult(
+            collector_name="pappers",
+            target="123456789",
+            success=True,
+            items_collected=5,
+            items_saved=3,
+        )
+
+        assert result.collector_name == "pappers"
+        assert result.target == "123456789"
+        assert result.success is True
+        assert result.items_collected == 5
+        assert result.items_saved == 3
+
+    def test_to_dict(self):
+        """Test de la conversion en dictionnaire."""
+        from src.collectors.base import CollectionResult
+        from datetime import datetime
+
+        started = datetime(2024, 1, 1, 10, 0, 0)
+        finished = datetime(2024, 1, 1, 10, 0, 30)
+
+        result = CollectionResult(
+            collector_name="pappers",
+            target="123456789",
+            success=True,
+            items_collected=5,
+            started_at=started,
+            finished_at=finished,
+        )
+
+        d = result.to_dict()
+
+        assert d["collector"] == "pappers"
+        assert d["success"] is True
+        assert d["duration_seconds"] == 30.0

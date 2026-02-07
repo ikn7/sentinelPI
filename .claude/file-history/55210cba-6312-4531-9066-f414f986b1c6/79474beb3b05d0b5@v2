@@ -1,0 +1,339 @@
+"""Tests du module de reporting StratWatch."""
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timedelta, date
+from pathlib import Path
+import tempfile
+import os
+
+import src.reporting.generator
+
+from src.reporting.generator import ReportGenerator
+
+
+class TestReportGenerator:
+    """Tests de la classe ReportGenerator."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        return AsyncMock()
+
+    @pytest.fixture
+    def generator(self, mock_session):
+        """Crée un générateur de rapport."""
+        return ReportGenerator(mock_session)
+
+    def test_init(self, mock_session):
+        """Test d'initialisation."""
+        generator = ReportGenerator(mock_session)
+        assert generator._session is mock_session
+        assert generator._env is not None
+
+    def test_custom_filters_registered(self, generator):
+        """Test que les filtres personnalisés sont enregistrés."""
+        filters = generator._env.filters
+        assert "format_date" in filters
+        assert "format_currency" in filters
+        assert "truncate_text" in filters
+        assert "format_number" in filters
+
+    def test_format_date_filter(self, generator):
+        """Test du filtre format_date."""
+        format_date = generator._env.filters["format_date"]
+
+        # Date
+        dt = datetime(2024, 1, 15, 10, 30)
+        assert format_date(dt) == "15/01/2024"
+        assert format_date(dt, "%d/%m/%Y %H:%M") == "15/01/2024 10:30"
+
+        # None retourne N/A
+        assert format_date(None) == "N/A"
+
+    def test_format_currency_filter(self, generator):
+        """Test du filtre format_currency."""
+        format_currency = generator._env.filters["format_currency"]
+
+        assert "1 000" in format_currency(1000)
+        assert "€" in format_currency(1000)
+        assert "1 500 000" in format_currency(1500000)
+        # None retourne N/A
+        assert format_currency(None) == "N/A"
+
+    def test_truncate_text_filter(self, generator):
+        """Test du filtre truncate_text."""
+        truncate_text = generator._env.filters["truncate_text"]
+
+        text = "Lorem ipsum dolor sit amet consectetur"
+        # 10 - 3 = 7 caractères + "..."
+        assert truncate_text(text, 10) == "Lorem i..."
+        assert truncate_text(text, 100) == text
+
+    def test_format_number_filter(self, generator):
+        """Test du filtre format_number."""
+        format_number = generator._env.filters["format_number"]
+
+        assert format_number(1000) == "1 000"
+        assert format_number(1500000) == "1 500 000"
+        assert format_number(None) == "N/A"
+
+
+class TestGetStats:
+    """Tests de récupération des statistiques."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        session = AsyncMock()
+        # Mock pour les requêtes de comptage
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_result.all.return_value = []
+        session.execute.return_value = mock_result
+        return session
+
+    @pytest.mark.asyncio
+    async def test_get_stats(self, mock_session):
+        """Test de récupération des statistiques."""
+        generator = ReportGenerator(mock_session)
+        stats = await generator._get_stats(7)
+
+        assert "period_days" in stats
+        assert "competitors_count" in stats
+        assert "total_alerts" in stats
+        assert "critical_alerts" in stats
+        assert "new_job_offers" in stats
+        assert "new_regulations" in stats
+
+    @pytest.mark.asyncio
+    async def test_get_stats_period(self, mock_session):
+        """Test avec une période différente."""
+        generator = ReportGenerator(mock_session)
+        stats = await generator._get_stats(30)
+
+        assert stats["period_days"] == 30
+
+
+class TestGetAlerts:
+    """Tests de récupération des alertes."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        session = AsyncMock()
+        return session
+
+    @pytest.mark.asyncio
+    async def test_get_alerts_empty(self, mock_session):
+        """Test sans alertes."""
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        generator = ReportGenerator(mock_session)
+        alerts = await generator._get_alerts(7)
+
+        assert alerts == []
+
+
+class TestGetCompetitorsSummary:
+    """Tests de récupération du résumé des concurrents."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        return AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_get_competitors_summary_empty(self, mock_session):
+        """Test sans concurrents."""
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        generator = ReportGenerator(mock_session)
+        competitors = await generator._get_competitors_summary(7)
+
+        assert competitors == []
+
+
+class TestGetDeadlines:
+    """Tests de récupération des échéances."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        return AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_get_deadlines_empty(self, mock_session):
+        """Test sans échéances."""
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_session.execute.return_value = mock_result
+
+        generator = ReportGenerator(mock_session)
+        deadlines = await generator._get_deadlines(30)
+
+        assert deadlines == []
+
+
+class TestWeeklyReportGeneration:
+    """Tests de génération du rapport hebdomadaire."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_result.scalars.return_value = []
+        mock_result.all.return_value = []
+        session.execute.return_value = mock_result
+        return session
+
+    @pytest.mark.asyncio
+    async def test_generate_weekly_report_html(self, mock_session):
+        """Test de génération du rapport HTML."""
+        generator = ReportGenerator(mock_session)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(generator, "_get_output_path") as mock_path:
+                output_path = Path(tmpdir) / "rapport_test.html"
+                mock_path.return_value = output_path
+
+                results = await generator.generate_weekly_report(formats=["html"])
+
+                assert len(results) == 1
+                assert results[0].exists()
+                content = results[0].read_text()
+                assert "Rapport de veille hebdomadaire" in content
+
+    @pytest.mark.asyncio
+    async def test_generate_weekly_report_markdown(self, mock_session):
+        """Test de génération du rapport Markdown."""
+        generator = ReportGenerator(mock_session)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(generator, "_get_output_path") as mock_path:
+                output_path = Path(tmpdir) / "rapport_test.md"
+                mock_path.return_value = output_path
+
+                results = await generator.generate_weekly_report(formats=["md"])
+
+                assert len(results) == 1
+                assert results[0].exists()
+                content = results[0].read_text()
+                assert "# Rapport de veille hebdomadaire" in content
+
+
+class TestCompetitorReportGeneration:
+    """Tests de génération du rapport concurrent."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        return AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_generate_competitor_not_found(self, mock_session):
+        """Test de concurrent non trouvé."""
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        generator = ReportGenerator(mock_session)
+
+        with pytest.raises(ValueError, match="non trouvé"):
+            await generator.generate_competitor_report("999")
+
+
+class TestPDFGeneration:
+    """Tests de génération PDF."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_result.scalars.return_value = []
+        mock_result.all.return_value = []
+        session.execute.return_value = mock_result
+        return session
+
+    @pytest.mark.asyncio
+    async def test_generate_pdf_weasyprint_not_available(self, mock_session):
+        """Test quand WeasyPrint n'est pas disponible."""
+        generator = ReportGenerator(mock_session)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(generator, "_get_output_path") as mock_path:
+                output_path = Path(tmpdir) / "rapport_test.pdf"
+                mock_path.return_value = output_path
+
+                # Simuler l'absence de WeasyPrint
+                with patch.dict("sys.modules", {"weasyprint": None}):
+                    # Génération PDF devrait échouer mais ne pas crasher
+                    results = await generator.generate_weekly_report(formats=["pdf"])
+                    # Le PDF n'est pas généré si WeasyPrint n'est pas là
+                    assert len(results) == 0
+
+
+class TestReportOutputPaths:
+    """Tests des chemins de sortie des rapports."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        return AsyncMock()
+
+    def test_get_output_path(self, mock_session):
+        """Test du chemin de sortie."""
+        generator = ReportGenerator(mock_session)
+        path = generator._get_output_path("test.html")
+
+        assert path.name == "test.html"
+        assert "exports" in str(path)
+
+    def test_output_directory_created(self, mock_session):
+        """Test de création du répertoire de sortie."""
+        generator = ReportGenerator(mock_session)
+
+        # Le répertoire exports doit être créé
+        path = generator._get_output_path("test.html")
+        assert path.parent.exists()
+        assert "exports" in str(path)
+
+
+class TestMultipleFormats:
+    """Tests de génération multi-formats."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Crée une session mock."""
+        session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = 0
+        mock_result.scalars.return_value = []
+        mock_result.all.return_value = []
+        session.execute.return_value = mock_result
+        return session
+
+    @pytest.mark.asyncio
+    async def test_generate_multiple_formats(self, mock_session):
+        """Test de génération en plusieurs formats."""
+        generator = ReportGenerator(mock_session)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            call_count = 0
+
+            def get_path(filename):
+                return Path(tmpdir) / filename
+
+            with patch.object(generator, "_get_output_path", side_effect=get_path):
+                results = await generator.generate_weekly_report(formats=["html", "md"])
+
+                assert len(results) == 2
+                assert all(p.exists() for p in results)

@@ -1,0 +1,243 @@
+"""Interface en ligne de commande pour StratWatch."""
+
+import asyncio
+import sys
+from typing import Optional
+
+import click
+
+from src.config import get_settings, load_competitors, PROJECT_ROOT
+from src.utils.logging import setup_logging, get_logger
+
+
+@click.group()
+@click.version_option(version="1.0.0", prog_name="StratWatch")
+@click.option("--debug/--no-debug", default=False, help="Mode debug")
+def main(debug: bool) -> None:
+    """StratWatch - Plateforme de veille stratégique."""
+    settings = get_settings()
+    log_level = "DEBUG" if debug else settings.logging.level
+
+    setup_logging(
+        level=log_level,
+        log_format=settings.logging.format,
+        rotation=settings.logging.rotation,
+        retention=settings.logging.retention,
+        log_dir=settings.get_log_dir(),
+    )
+
+
+@main.group()
+def db() -> None:
+    """Commandes de gestion de la base de données."""
+    pass
+
+
+@db.command("init")
+def db_init() -> None:
+    """Initialise la base de données et crée les tables."""
+    from src.storage import init_database
+
+    logger = get_logger("cli")
+    logger.info("Initialisation de la base de données...")
+
+    asyncio.run(init_database())
+
+    logger.info("Base de données initialisée avec succès")
+    click.echo("Base de données initialisée.")
+
+
+@db.command("reset")
+@click.confirmation_option(prompt="Êtes-vous sûr de vouloir supprimer toutes les données ?")
+def db_reset() -> None:
+    """Réinitialise la base de données (supprime toutes les données)."""
+    from src.storage import db, init_database
+
+    logger = get_logger("cli")
+
+    async def reset():
+        await db.init()
+        await db.drop_tables()
+        await db.create_tables()
+        await db.close()
+
+    logger.warning("Réinitialisation de la base de données...")
+    asyncio.run(reset())
+
+    logger.info("Base de données réinitialisée")
+    click.echo("Base de données réinitialisée.")
+
+
+@main.group()
+def collect() -> None:
+    """Commandes de collecte de données."""
+    pass
+
+
+@collect.command("legal")
+@click.option("--siren", "-s", help="SIREN spécifique à collecter")
+@click.option("--all", "collect_all", is_flag=True, help="Collecter tous les concurrents configurés")
+def collect_legal(siren: Optional[str], collect_all: bool) -> None:
+    """Collecte les données légales via Pappers."""
+    from src.collectors import PappersCollector
+    from src.storage import db
+
+    logger = get_logger("cli")
+
+    async def run_collection():
+        await db.init()
+        await db.create_tables()
+
+        async with PappersCollector() as collector:
+            async with db.session() as session:
+                if siren:
+                    result = await collector.collect_with_details(siren, session)
+                    click.echo(f"Collecte terminée: {result.items_collected} éléments collectés, "
+                              f"{result.items_saved} sauvegardés")
+                elif collect_all:
+                    competitors_config = load_competitors()
+                    for comp in competitors_config.competitors:
+                        result = await collector.collect_with_details(comp.siren, session)
+                        click.echo(f"[{comp.siren}] {comp.nom}: {result.items_saved} éléments")
+                else:
+                    click.echo("Spécifiez --siren ou --all")
+                    return
+
+        await db.close()
+
+    logger.info("Démarrage de la collecte des données légales")
+    asyncio.run(run_collection())
+
+
+@collect.command("search")
+@click.argument("query")
+@click.option("--limit", "-n", default=10, help="Nombre de résultats")
+def collect_search(query: str, limit: int) -> None:
+    """Recherche des entreprises par nom."""
+    from src.collectors import PappersCollector
+
+    logger = get_logger("cli")
+
+    async def run_search():
+        async with PappersCollector() as collector:
+            results = await collector.search_companies(query, limit=limit)
+
+            if not results:
+                click.echo("Aucun résultat trouvé.")
+                return
+
+            click.echo(f"\n{len(results)} entreprise(s) trouvée(s):\n")
+            for company in results:
+                click.echo(f"  SIREN: {company['siren']}")
+                click.echo(f"  Nom: {company['nom']}")
+                click.echo(f"  Forme: {company['forme_juridique']}")
+                click.echo(f"  NAF: {company['code_naf']}")
+                click.echo(f"  Ville: {company['ville']}")
+                click.echo("")
+
+    logger.info(f"Recherche d'entreprises: {query}")
+    asyncio.run(run_search())
+
+
+@main.command("api")
+@click.option("--host", "-h", default=None, help="Hôte de l'API")
+@click.option("--port", "-p", default=None, type=int, help="Port de l'API")
+def api(host: Optional[str], port: Optional[int]) -> None:
+    """Démarre le serveur API."""
+    import uvicorn
+
+    settings = get_settings()
+    host = host or settings.api.host
+    port = port or settings.api.port
+
+    logger = get_logger("cli")
+    logger.info(f"Démarrage de l'API sur {host}:{port}")
+
+    click.echo(f"API StratWatch disponible sur http://{host}:{port}")
+    click.echo(f"Documentation: http://{host}:{port}/docs")
+
+    uvicorn.run(
+        "src.api.app:app",
+        host=host,
+        port=port,
+        reload=False,
+    )
+
+
+@main.command("dashboard")
+@click.option("--host", "-h", default=None, help="Hôte du dashboard")
+@click.option("--port", "-p", default=None, type=int, help="Port du dashboard")
+def dashboard(host: Optional[str], port: Optional[int]) -> None:
+    """Démarre le dashboard Streamlit."""
+    import subprocess
+
+    settings = get_settings()
+    host = host or settings.dashboard.host
+    port = port or settings.dashboard.port
+
+    logger = get_logger("cli")
+    logger.info(f"Démarrage du dashboard sur {host}:{port}")
+
+    click.echo(f"Dashboard StratWatch disponible sur http://{host}:{port}")
+
+    dashboard_path = PROJECT_ROOT / "src" / "dashboard" / "app.py"
+    subprocess.run([
+        sys.executable, "-m", "streamlit", "run",
+        str(dashboard_path),
+        "--server.address", host,
+        "--server.port", str(port),
+    ])
+
+
+@main.command("config")
+@click.option("--show", is_flag=True, help="Affiche la configuration actuelle")
+@click.option("--check", is_flag=True, help="Vérifie la configuration")
+def config(show: bool, check: bool) -> None:
+    """Gestion de la configuration."""
+    settings = get_settings()
+
+    if show:
+        click.echo("\n=== Configuration StratWatch ===\n")
+        click.echo(f"Environnement: {settings.app.environment}")
+        click.echo(f"Base de données: {settings.database.type}")
+        click.echo(f"API Pappers: {'configurée' if settings.pappers_api_key else 'non configurée'}")
+        click.echo(f"Telegram: {'activé' if settings.alerting.channels.telegram.enabled else 'désactivé'}")
+        click.echo(f"Email: {'activé' if settings.alerting.channels.email.enabled else 'désactivé'}")
+        click.echo("")
+
+        competitors = load_competitors()
+        click.echo(f"Concurrents surveillés: {len(competitors.competitors)}")
+
+    if check:
+        errors = []
+        warnings = []
+
+        if not settings.pappers_api_key:
+            errors.append("Clé API Pappers non configurée (PAPPERS_API_KEY)")
+
+        if settings.alerting.channels.telegram.enabled:
+            if not settings.telegram_bot_token:
+                warnings.append("Token Telegram non configuré")
+            if not settings.telegram_chat_id:
+                warnings.append("Chat ID Telegram non configuré")
+
+        competitors = load_competitors()
+        if not competitors.competitors:
+            warnings.append("Aucun concurrent configuré dans config/competitors.yaml")
+
+        if errors:
+            click.echo("\nErreurs:")
+            for err in errors:
+                click.echo(f"  - {err}")
+
+        if warnings:
+            click.echo("\nAvertissements:")
+            for warn in warnings:
+                click.echo(f"  - {warn}")
+
+        if not errors and not warnings:
+            click.echo("\nConfiguration OK")
+
+
+if __name__ == "__main__":
+    main()

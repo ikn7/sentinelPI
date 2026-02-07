@@ -1,0 +1,152 @@
+# SentinelPi
+
+Station de veille multi-sources autonome pour Raspberry Pi.
+
+## Fonctionnalités
+
+- **Agrégation multi-sources** : RSS, sites web, Reddit, Mastodon, YouTube
+- **Filtrage intelligent** : mots-clés, expressions régulières, règles composées
+- **Détection de nouveautés** : déduplication par hash et GUID
+- **Alertes temps réel** : Telegram, email, webhooks
+- **Dashboard web** : interface Streamlit pour consultation et configuration
+- **Rapports automatiques** : synthèses périodiques HTML/PDF
+
+## Prérequis
+
+- Raspberry Pi 4/5 avec Raspberry Pi OS (Debian)
+- Python 3.11+
+- 2 Go de RAM minimum recommandé
+
+## Installation rapide
+
+```bash
+# Cloner le projet
+git clone https://github.com/sentinelpi/sentinelpi.git
+cd sentinelpi
+
+# Créer l'environnement virtuel
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Installer les dépendances
+pip install -e .
+
+# Copier et configurer l'environnement
+cp .env.example .env
+nano .env  # Configurer les tokens Telegram, etc.
+
+# Lancer SentinelPi
+sentinelpi
+```
+
+## Installation complète (service systemd)
+
+```bash
+# Exécuter le script d'installation
+chmod +x scripts/install.sh
+./scripts/install.sh
+
+# Configurer le service
+chmod +x scripts/setup_service.sh
+sudo ./scripts/setup_service.sh
+```
+
+## Configuration
+
+### Sources (`config/sources.yaml`)
+
+Définir les sources à surveiller :
+
+```yaml
+sources:
+  - name: "Le Monde - Tech"
+    type: rss
+    url: "https://www.lemonde.fr/tech/rss_full.xml"
+    category: "presse"
+    interval_minutes: 30
+```
+
+### Filtres (`config/filters.yaml`)
+
+Définir les règles de filtrage :
+
+```yaml
+filters:
+  - name: "Alertes IA"
+    action: alert
+    action_params:
+      severity: notice
+    conditions:
+      type: keywords
+      field: all
+      value: ["intelligence artificielle", "ChatGPT", "LLM"]
+```
+
+### Alertes (`config/alerts.yaml`)
+
+Configurer les canaux de notification :
+
+```yaml
+alerting:
+  channels:
+    telegram:
+      enabled: true
+      bot_token: "${TELEGRAM_BOT_TOKEN}"
+      chat_id: "${TELEGRAM_CHAT_ID}"
+```
+
+## Utilisation
+
+### Ligne de commande
+
+```bash
+# Lancer la collecte en continu
+sentinelpi
+
+# Lancer le dashboard web
+sentinelpi-dashboard
+```
+
+### Dashboard
+
+Accéder à `http://localhost:8501` pour :
+- Consulter les flux en temps réel
+- Gérer les sources
+- Configurer les filtres
+- Voir l'historique des alertes
+
+## Structure du projet
+
+```
+sentinelpi/
+├── config/          # Fichiers de configuration YAML
+├── src/             # Code source
+│   ├── collectors/  # Collecteurs par type de source
+│   ├── processors/  # Traitement (dédup, filtrage, scoring)
+│   ├── storage/     # Base de données SQLite
+│   ├── alerting/    # Notifications
+│   ├── reporting/   # Génération de rapports
+│   ├── dashboard/   # Interface Streamlit
+│   └── utils/       # Utilitaires
+├── data/            # Données (DB, cache, exports)
+├── logs/            # Fichiers de log
+└── tests/           # Tests unitaires
+```
+
+## Développement
+
+```bash
+# Installer les dépendances de dev
+pip install -e ".[dev]"
+
+# Lancer les tests
+pytest
+
+# Vérifier le code
+ruff check src/
+mypy src/
+```
+
+## Licence
+
+MIT

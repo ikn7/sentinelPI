@@ -1,0 +1,446 @@
+"""Collecteur de données légales via l'API Pappers.
+
+Pappers fournit un accès aux données légales des entreprises françaises :
+- Informations générales (SIREN, SIRET, forme juridique, etc.)
+- Dirigeants et bénéficiaires effectifs
+- Données financières (CA, résultat, effectif)
+- Publications au BODACC
+- Établissements
+
+Documentation API : https://www.pappers.fr/api/documentation
+"""
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any, Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.collectors.base import BaseCollector, CollectionResult
+from src.config import get_settings
+from src.storage.models import Competitor, Dirigeant, Financial, generate_uuid
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+# URL de base de l'API Pappers
+PAPPERS_API_BASE = "https://api.pappers.fr/v2"
+
+
+@dataclass
+class PappersCompanyData:
+    """Données d'entreprise retournées par Pappers."""
+
+    siren: str
+    siret_siege: Optional[str] = None
+    nom: Optional[str] = None
+    nom_commercial: Optional[str] = None
+    forme_juridique: Optional[str] = None
+    date_creation: Optional[date] = None
+    capital_social: Optional[int] = None
+    code_naf: Optional[str] = None
+    adresse_siege: Optional[str] = None
+    dirigeants: list[dict] = None
+    finances: list[dict] = None
+
+    def __post_init__(self):
+        if self.dirigeants is None:
+            self.dirigeants = []
+        if self.finances is None:
+            self.finances = []
+
+
+class PappersCollector(BaseCollector[Competitor]):
+    """Collecteur de données d'entreprises via l'API Pappers.
+
+    Récupère les informations légales, financières et les dirigeants
+    des entreprises surveillées.
+
+    Example:
+        async with PappersCollector() as collector:
+            companies = await collector.collect_for_competitor("123456789")
+    """
+
+    name = "pappers"
+    source_name = "pappers"
+
+    def __init__(self, session: Optional[AsyncSession] = None) -> None:
+        """Initialise le collecteur Pappers.
+
+        Args:
+            session: Session SQLAlchemy optionnelle.
+        """
+        super().__init__(session)
+        self._api_key = get_settings().pappers_api_key
+
+    def _check_api_key(self) -> None:
+        """Vérifie que la clé API est configurée."""
+        if not self._api_key:
+            raise ValueError(
+                "Clé API Pappers non configurée. "
+                "Définissez PAPPERS_API_KEY dans votre fichier .env"
+            )
+
+    def _build_url(self, endpoint: str) -> str:
+        """Construit l'URL complète de l'API."""
+        return f"{PAPPERS_API_BASE}/{endpoint}"
+
+    def _parse_date(self, date_str: Optional[str]) -> Optional[date]:
+        """Parse une date au format YYYY-MM-DD."""
+        if not date_str:
+            return None
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    def _parse_company_data(self, data: dict[str, Any]) -> PappersCompanyData:
+        """Parse les données d'entreprise retournées par l'API.
+
+        Args:
+            data: Données JSON de l'API.
+
+        Returns:
+            Objet PappersCompanyData.
+        """
+        # Construire l'adresse du siège
+        siege = data.get("siege", {})
+        adresse_parts = [
+            siege.get("adresse_ligne_1", ""),
+            siege.get("adresse_ligne_2", ""),
+            f"{siege.get('code_postal', '')} {siege.get('ville', '')}".strip(),
+        ]
+        adresse = ", ".join(part for part in adresse_parts if part)
+
+        # Parser les dirigeants
+        dirigeants = []
+        for rep in data.get("representants", []):
+            dirigeant = {
+                "nom": rep.get("nom", rep.get("denomination", "")),
+                "prenom": rep.get("prenom"),
+                "fonction": rep.get("qualite", ""),
+                "date_nomination": self._parse_date(rep.get("date_prise_de_poste")),
+            }
+            if dirigeant["nom"] and dirigeant["fonction"]:
+                dirigeants.append(dirigeant)
+
+        # Parser les données financières
+        finances = []
+        for exercice in data.get("finances", []):
+            finance = {
+                "annee": exercice.get("annee"),
+                "chiffre_affaires": exercice.get("chiffre_affaires"),
+                "resultat_net": exercice.get("resultat"),
+                "effectif": exercice.get("effectif"),
+            }
+            if finance["annee"]:
+                finances.append(finance)
+
+        return PappersCompanyData(
+            siren=data.get("siren", ""),
+            siret_siege=data.get("siege", {}).get("siret"),
+            nom=data.get("nom_entreprise") or data.get("denomination"),
+            nom_commercial=data.get("nom_commercial"),
+            forme_juridique=data.get("forme_juridique"),
+            date_creation=self._parse_date(data.get("date_creation")),
+            capital_social=data.get("capital"),
+            code_naf=data.get("code_naf"),
+            adresse_siege=adresse or None,
+            dirigeants=dirigeants,
+            finances=finances,
+        )
+
+    async def _fetch_company(self, siren: str) -> Optional[PappersCompanyData]:
+        """Récupère les données d'une entreprise par son SIREN.
+
+        Args:
+            siren: Numéro SIREN (9 chiffres).
+
+        Returns:
+            Données de l'entreprise ou None si non trouvée.
+        """
+        self._check_api_key()
+
+        params = {
+            "api_token": self._api_key,
+            "siren": siren,
+        }
+
+        try:
+            data = await self.client.get_json(
+                self._build_url("entreprise"),
+                params=params,
+                use_cache=True,
+            )
+            return self._parse_company_data(data)
+
+        except Exception as e:
+            if "404" in str(e):
+                self._logger.warning(f"Entreprise non trouvée: SIREN {siren}")
+                return None
+            self._logger.error(f"Erreur lors de la récupération de {siren}: {e}")
+            raise
+
+    async def collect(self, sirens: Optional[list[str]] = None, **kwargs: Any) -> list[Competitor]:
+        """Collecte les données pour une liste de SIRENs.
+
+        Args:
+            sirens: Liste de numéros SIREN. Si None, charge depuis la config.
+            **kwargs: Arguments supplémentaires ignorés.
+
+        Returns:
+            Liste des objets Competitor.
+        """
+        from src.config import load_competitors
+
+        if sirens is None:
+            competitors_config = load_competitors()
+            sirens = [c.siren for c in competitors_config.competitors]
+
+        if not sirens:
+            self._logger.warning("Aucun SIREN à collecter")
+            return []
+
+        self.log_collection_start(f"{len(sirens)} entreprises")
+
+        results = []
+        for siren in sirens:
+            try:
+                competitors = await self.collect_for_competitor(siren)
+                results.extend(competitors)
+            except Exception as e:
+                self.log_error(f"Erreur pour SIREN {siren}", e)
+
+        self.log_collection_end("entreprises", len(results))
+        return results
+
+    async def collect_for_competitor(
+        self,
+        siren: str,
+        **kwargs: Any,
+    ) -> list[Competitor]:
+        """Collecte les données pour un concurrent spécifique.
+
+        Args:
+            siren: Numéro SIREN du concurrent.
+            **kwargs: Arguments supplémentaires ignorés.
+
+        Returns:
+            Liste contenant le Competitor (ou vide si non trouvé).
+        """
+        self._logger.debug(f"Collecte des données pour SIREN {siren}")
+
+        company_data = await self._fetch_company(siren)
+        if company_data is None:
+            return []
+
+        # Créer l'objet Competitor
+        competitor = Competitor(
+            id=generate_uuid(),
+            siren=company_data.siren,
+            siret_siege=company_data.siret_siege,
+            nom=company_data.nom or f"Entreprise {siren}",
+            nom_commercial=company_data.nom_commercial,
+            forme_juridique=company_data.forme_juridique,
+            date_creation=company_data.date_creation,
+            capital_social=company_data.capital_social,
+            code_naf=company_data.code_naf,
+            adresse_siege=company_data.adresse_siege,
+        )
+
+        return [competitor]
+
+    async def collect_with_details(
+        self,
+        siren: str,
+        session: AsyncSession,
+    ) -> CollectionResult:
+        """Collecte complète avec dirigeants et finances.
+
+        Récupère les données de l'entreprise et crée/met à jour
+        les enregistrements en base incluant dirigeants et données financières.
+
+        Args:
+            siren: Numéro SIREN.
+            session: Session SQLAlchemy.
+
+        Returns:
+            Résultat de la collecte.
+        """
+        started_at = datetime.now()
+        errors = []
+        items_collected = 0
+        items_saved = 0
+
+        try:
+            self._logger.info(f"Collecte complète pour SIREN {siren}")
+
+            # Récupérer les données
+            company_data = await self._fetch_company(siren)
+            if company_data is None:
+                return CollectionResult(
+                    collector_name=self.name,
+                    target=siren,
+                    success=False,
+                    errors=["Entreprise non trouvée"],
+                    started_at=started_at,
+                    finished_at=datetime.now(),
+                )
+
+            items_collected += 1
+
+            # Chercher si le concurrent existe déjà
+            result = await session.execute(
+                select(Competitor).where(Competitor.siren == siren)
+            )
+            competitor = result.scalar_one_or_none()
+
+            if competitor is None:
+                # Créer le concurrent
+                competitor = Competitor(
+                    id=generate_uuid(),
+                    siren=company_data.siren,
+                    siret_siege=company_data.siret_siege,
+                    nom=company_data.nom or f"Entreprise {siren}",
+                    nom_commercial=company_data.nom_commercial,
+                    forme_juridique=company_data.forme_juridique,
+                    date_creation=company_data.date_creation,
+                    capital_social=company_data.capital_social,
+                    code_naf=company_data.code_naf,
+                    adresse_siege=company_data.adresse_siege,
+                )
+                session.add(competitor)
+                items_saved += 1
+                self._logger.info(f"Nouveau concurrent créé: {competitor.nom}")
+            else:
+                # Mettre à jour le concurrent existant
+                competitor.siret_siege = company_data.siret_siege
+                competitor.nom = company_data.nom or competitor.nom
+                competitor.nom_commercial = company_data.nom_commercial
+                competitor.forme_juridique = company_data.forme_juridique
+                competitor.capital_social = company_data.capital_social
+                competitor.adresse_siege = company_data.adresse_siege
+                competitor.updated_at = datetime.now()
+                items_saved += 1
+                self._logger.info(f"Concurrent mis à jour: {competitor.nom}")
+
+            await session.flush()
+
+            # Ajouter les dirigeants
+            for dir_data in company_data.dirigeants:
+                items_collected += 1
+
+                # Vérifier si le dirigeant existe
+                existing = await session.execute(
+                    select(Dirigeant).where(
+                        Dirigeant.competitor_id == competitor.id,
+                        Dirigeant.nom == dir_data["nom"],
+                        Dirigeant.fonction == dir_data["fonction"],
+                    )
+                )
+                if existing.scalar_one_or_none() is None:
+                    dirigeant = Dirigeant(
+                        id=generate_uuid(),
+                        competitor_id=competitor.id,
+                        nom=dir_data["nom"],
+                        prenom=dir_data.get("prenom"),
+                        fonction=dir_data["fonction"],
+                        date_nomination=dir_data.get("date_nomination"),
+                    )
+                    session.add(dirigeant)
+                    items_saved += 1
+
+            # Ajouter les données financières
+            for fin_data in company_data.finances:
+                items_collected += 1
+
+                # Vérifier si les données existent
+                existing = await session.execute(
+                    select(Financial).where(
+                        Financial.competitor_id == competitor.id,
+                        Financial.annee == fin_data["annee"],
+                    )
+                )
+                if existing.scalar_one_or_none() is None:
+                    financial = Financial(
+                        id=generate_uuid(),
+                        competitor_id=competitor.id,
+                        annee=fin_data["annee"],
+                        chiffre_affaires=fin_data.get("chiffre_affaires"),
+                        resultat_net=fin_data.get("resultat_net"),
+                        effectif=fin_data.get("effectif"),
+                        source="pappers",
+                    )
+                    session.add(financial)
+                    items_saved += 1
+
+            await session.commit()
+
+            return CollectionResult(
+                collector_name=self.name,
+                target=siren,
+                success=True,
+                items_collected=items_collected,
+                items_saved=items_saved,
+                started_at=started_at,
+                finished_at=datetime.now(),
+            )
+
+        except Exception as e:
+            self._logger.error(f"Erreur lors de la collecte pour {siren}: {e}")
+            await session.rollback()
+            return CollectionResult(
+                collector_name=self.name,
+                target=siren,
+                success=False,
+                items_collected=items_collected,
+                errors=[str(e)],
+                started_at=started_at,
+                finished_at=datetime.now(),
+            )
+
+    async def search_companies(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Recherche des entreprises par nom ou SIREN.
+
+        Args:
+            query: Terme de recherche.
+            limit: Nombre maximum de résultats.
+
+        Returns:
+            Liste des entreprises trouvées (format simplifié).
+        """
+        self._check_api_key()
+
+        params = {
+            "api_token": self._api_key,
+            "q": query,
+            "par_page": min(limit, 100),
+        }
+
+        try:
+            data = await self.client.get_json(
+                self._build_url("recherche"),
+                params=params,
+            )
+
+            results = []
+            for item in data.get("resultats", []):
+                results.append({
+                    "siren": item.get("siren"),
+                    "nom": item.get("nom_entreprise"),
+                    "forme_juridique": item.get("forme_juridique"),
+                    "code_naf": item.get("code_naf"),
+                    "ville": item.get("siege", {}).get("ville"),
+                })
+
+            return results
+
+        except Exception as e:
+            self._logger.error(f"Erreur lors de la recherche '{query}': {e}")
+            raise

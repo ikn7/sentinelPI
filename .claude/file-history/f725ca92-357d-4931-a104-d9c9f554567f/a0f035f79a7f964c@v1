@@ -1,0 +1,329 @@
+"""
+Tests for the alert dispatcher.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from src.alerting.dispatcher import (
+    AlertAggregator,
+    AlertDispatcher,
+    AlertPayload,
+    AggregatedAlert,
+    NotificationChannel,
+)
+from src.storage.models import AlertSeverity
+
+
+@pytest.fixture
+def sample_alert() -> AlertPayload:
+    """Create a sample alert payload."""
+    return AlertPayload(
+        alert_id="test-alert-123",
+        severity=AlertSeverity.NOTICE,
+        item_guid="item-123",
+        title="Test Alert: Important News",
+        url="https://example.com/article",
+        summary="This is a test alert summary.",
+        source_id="source-1",
+        source_name="Test Source",
+        source_category="tech",
+        filter_id="filter-1",
+        filter_name="Tech Keywords",
+        matched_value="AI",
+    )
+
+
+@pytest.fixture
+def critical_alert() -> AlertPayload:
+    """Create a critical alert."""
+    return AlertPayload(
+        alert_id="critical-alert",
+        severity=AlertSeverity.CRITICAL,
+        title="Critical Security Alert",
+        summary="Security breach detected.",
+    )
+
+
+class MockChannel(NotificationChannel):
+    """Mock notification channel for testing."""
+
+    def __init__(self, name: str = "mock", enabled: bool = True):
+        self._name = name
+        self._enabled = enabled
+        self.sent_alerts: list[AlertPayload] = []
+        self.should_fail = False
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    async def send(self, alert: AlertPayload) -> bool:
+        if self.should_fail:
+            return False
+        self.sent_alerts.append(alert)
+        return True
+
+
+class TestAlertPayload:
+    """Tests for AlertPayload."""
+
+    def test_severity_emoji(self, sample_alert):
+        """Test severity emoji property."""
+        assert sample_alert.severity_emoji == "📢"
+
+        critical = AlertPayload(
+            alert_id="test",
+            severity=AlertSeverity.CRITICAL,
+            title="Test",
+        )
+        assert critical.severity_emoji == "🚨"
+
+    def test_to_dict(self, sample_alert):
+        """Test conversion to dictionary."""
+        d = sample_alert.to_dict()
+
+        assert d["alert_id"] == "test-alert-123"
+        assert d["severity"] == "notice"
+        assert d["title"] == "Test Alert: Important News"
+        assert d["source_name"] == "Test Source"
+
+    def test_published_at_formatted(self):
+        """Test date formatting."""
+        alert = AlertPayload(
+            alert_id="test",
+            severity=AlertSeverity.INFO,
+            title="Test",
+            published_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+        )
+
+        assert alert.published_at_formatted != ""
+        assert "15" in alert.published_at_formatted  # Day
+        assert "10" in alert.published_at_formatted  # Hour
+
+
+class TestAlertAggregator:
+    """Tests for AlertAggregator."""
+
+    def test_below_threshold_returns_none(self, sample_alert):
+        """Test that alerts below threshold are queued."""
+        aggregator = AlertAggregator(max_alerts_per_window=5)
+
+        result = aggregator.add(sample_alert)
+        assert result is None  # Still collecting
+
+    def test_threshold_triggers_aggregation(self, sample_alert):
+        """Test that reaching threshold triggers aggregation."""
+        aggregator = AlertAggregator(max_alerts_per_window=3)
+
+        # Add alerts up to threshold
+        aggregator.add(sample_alert)
+        aggregator.add(sample_alert)
+        result = aggregator.add(sample_alert)
+
+        assert result is not None
+        assert isinstance(result, AggregatedAlert)
+        assert result.count == 3
+
+    def test_flush_all(self, sample_alert):
+        """Test flushing pending alerts."""
+        aggregator = AlertAggregator(max_alerts_per_window=10)
+
+        aggregator.add(sample_alert)
+        aggregator.add(sample_alert)
+
+        result = aggregator.flush_all()
+
+        # Below 3 alerts, returns list
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+    def test_flush_empty(self):
+        """Test flushing with no pending alerts."""
+        aggregator = AlertAggregator()
+        result = aggregator.flush_all()
+        assert result is None
+
+
+class TestAlertDispatcher:
+    """Tests for AlertDispatcher."""
+
+    @pytest.mark.asyncio
+    async def test_register_channel(self):
+        """Test channel registration."""
+        dispatcher = AlertDispatcher()
+        channel = MockChannel("test")
+
+        dispatcher.register_channel(channel)
+
+        assert dispatcher.get_channel("test") is channel
+
+    @pytest.mark.asyncio
+    async def test_dispatch_to_channel(self, sample_alert):
+        """Test dispatching alert to channel."""
+        dispatcher = AlertDispatcher()
+        dispatcher._aggregator = None  # Disable aggregation for test
+
+        channel = MockChannel("test")
+        dispatcher.register_channel(channel)
+
+        # Make channel receive all severities
+        dispatcher._config = {
+            "alerting": {
+                "channels": {
+                    "test": {
+                        "enabled": True,
+                        "min_severity": "info",
+                    }
+                },
+                "rules": [],
+            }
+        }
+
+        results = await dispatcher.dispatch(sample_alert)
+
+        assert len(channel.sent_alerts) == 1
+        assert channel.sent_alerts[0].alert_id == sample_alert.alert_id
+
+    @pytest.mark.asyncio
+    async def test_dispatch_channel_failure(self, sample_alert):
+        """Test handling of channel failure."""
+        dispatcher = AlertDispatcher()
+        dispatcher._aggregator = None
+
+        channel = MockChannel("failing")
+        channel.should_fail = True
+        dispatcher.register_channel(channel)
+
+        dispatcher._config = {
+            "alerting": {
+                "channels": {
+                    "failing": {
+                        "enabled": True,
+                        "min_severity": "info",
+                    }
+                },
+                "rules": [],
+            }
+        }
+
+        results = await dispatcher.dispatch(sample_alert)
+
+        assert results.get("failing") is False
+
+    @pytest.mark.asyncio
+    async def test_disabled_channel_skipped(self, sample_alert):
+        """Test that disabled channels are skipped."""
+        dispatcher = AlertDispatcher()
+        dispatcher._aggregator = None
+
+        channel = MockChannel("disabled", enabled=False)
+        dispatcher.register_channel(channel)
+
+        results = await dispatcher.dispatch(sample_alert)
+
+        assert len(channel.sent_alerts) == 0
+
+    @pytest.mark.asyncio
+    async def test_multiple_channels(self, sample_alert):
+        """Test dispatching to multiple channels."""
+        dispatcher = AlertDispatcher()
+        dispatcher._aggregator = None
+
+        channel1 = MockChannel("channel1")
+        channel2 = MockChannel("channel2")
+        dispatcher.register_channel(channel1)
+        dispatcher.register_channel(channel2)
+
+        dispatcher._config = {
+            "alerting": {
+                "channels": {
+                    "channel1": {"enabled": True, "min_severity": "info"},
+                    "channel2": {"enabled": True, "min_severity": "info"},
+                },
+                "rules": [],
+            }
+        }
+
+        results = await dispatcher.dispatch(sample_alert)
+
+        assert len(channel1.sent_alerts) == 1
+        assert len(channel2.sent_alerts) == 1
+
+    @pytest.mark.asyncio
+    async def test_severity_filtering(self, sample_alert, critical_alert):
+        """Test that severity filtering works."""
+        dispatcher = AlertDispatcher()
+        dispatcher._aggregator = None
+
+        channel = MockChannel("warning_only")
+        dispatcher.register_channel(channel)
+
+        dispatcher._config = {
+            "alerting": {
+                "channels": {
+                    "warning_only": {
+                        "enabled": True,
+                        "min_severity": "warning",  # Only warning and above
+                    }
+                },
+                "rules": [],
+            }
+        }
+
+        # Notice alert should not be sent
+        await dispatcher.dispatch(sample_alert)
+        assert len(channel.sent_alerts) == 0
+
+        # Critical alert should be sent
+        await dispatcher.dispatch(critical_alert)
+        assert len(channel.sent_alerts) == 1
+
+
+class TestAggregatedAlert:
+    """Tests for AggregatedAlert."""
+
+    def test_title(self, sample_alert):
+        """Test aggregated title generation."""
+        agg = AggregatedAlert(
+            count=5,
+            severity=AlertSeverity.NOTICE,
+            alerts=[sample_alert] * 5,
+            period_start=datetime.now(timezone.utc),
+            period_end=datetime.now(timezone.utc),
+        )
+
+        assert "5" in agg.title
+
+    def test_summary(self, sample_alert):
+        """Test aggregated summary generation."""
+        alert1 = AlertPayload(
+            alert_id="1",
+            severity=AlertSeverity.INFO,
+            title="Test 1",
+            source_name="Source A",
+        )
+        alert2 = AlertPayload(
+            alert_id="2",
+            severity=AlertSeverity.INFO,
+            title="Test 2",
+            source_name="Source B",
+        )
+
+        agg = AggregatedAlert(
+            count=2,
+            severity=AlertSeverity.INFO,
+            alerts=[alert1, alert2],
+            period_start=datetime.now(timezone.utc),
+            period_end=datetime.now(timezone.utc),
+        )
+
+        assert "2 source" in agg.summary.lower()

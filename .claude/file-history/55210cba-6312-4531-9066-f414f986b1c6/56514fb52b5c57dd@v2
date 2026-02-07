@@ -1,0 +1,310 @@
+"""Notifications Telegram pour StratWatch.
+
+Envoie les alertes via un bot Telegram.
+"""
+
+import asyncio
+from typing import Optional
+
+from src.config import get_settings
+from src.storage.models import Alert, SEVERITY_ORDER
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+# Emojis par sévérité
+SEVERITY_EMOJI = {
+    "info": "ℹ️",
+    "attention": "⚠️",
+    "important": "🔶",
+    "critique": "🚨",
+}
+
+# Emojis par catégorie
+CATEGORY_EMOJI = {
+    "concurrent": "🏢",
+    "reglementaire": "📜",
+    "croisee": "🔗",
+}
+
+
+class TelegramNotifier:
+    """Gestionnaire de notifications Telegram.
+
+    Envoie des alertes formatées via l'API Telegram Bot.
+
+    Example:
+        notifier = TelegramNotifier()
+        await notifier.send_alert(alert)
+    """
+
+    def __init__(
+        self,
+        bot_token: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> None:
+        """Initialise le notifier Telegram.
+
+        Args:
+            bot_token: Token du bot Telegram.
+            chat_id: ID du chat/groupe cible.
+        """
+        settings = get_settings()
+
+        self._bot_token = bot_token or settings.telegram_bot_token
+        self._chat_id = chat_id or settings.telegram_chat_id
+        self._enabled = settings.alerting.channels.telegram.enabled
+        self._min_severity = settings.alerting.channels.telegram.min_severity
+        self._bot = None
+        self._logger = get_logger("alerting.telegram")
+
+    def _check_config(self) -> bool:
+        """Vérifie que la configuration est complète.
+
+        Returns:
+            True si configuré, False sinon.
+        """
+        if not self._enabled:
+            self._logger.debug("Notifications Telegram désactivées")
+            return False
+
+        if not self._bot_token:
+            self._logger.warning("Token Telegram non configuré")
+            return False
+
+        if not self._chat_id:
+            self._logger.warning("Chat ID Telegram non configuré")
+            return False
+
+        return True
+
+    async def _get_bot(self):
+        """Récupère ou crée l'instance du bot.
+
+        Returns:
+            Instance du bot Telegram.
+        """
+        if self._bot is None:
+            try:
+                from telegram import Bot
+                self._bot = Bot(token=self._bot_token)
+            except ImportError:
+                self._logger.error("python-telegram-bot non installé")
+                raise
+
+        return self._bot
+
+    def _format_alert(self, alert: Alert) -> str:
+        """Formate une alerte en message Telegram.
+
+        Args:
+            alert: Alerte à formater.
+
+        Returns:
+            Message formaté en Markdown.
+        """
+        severity_emoji = SEVERITY_EMOJI.get(alert.severite, "📌")
+        category_emoji = CATEGORY_EMOJI.get(alert.categorie, "📋")
+
+        # En-tête
+        lines = [
+            f"{severity_emoji} *{alert.titre}*",
+            "",
+        ]
+
+        # Corps du message
+        message = alert.message
+        if len(message) > 500:
+            message = message[:497] + "..."
+
+        # Échapper les caractères spéciaux Markdown
+        message = self._escape_markdown(message)
+        lines.append(message)
+
+        # Métadonnées
+        lines.append("")
+        lines.append(f"{category_emoji} _{alert.categorie.capitalize()}_")
+
+        # Lien source
+        if alert.source_url:
+            lines.append(f"🔗 [Voir la source]({alert.source_url})")
+
+        # Timestamp
+        time_str = alert.created_at.strftime("%d/%m/%Y %H:%M")
+        lines.append(f"🕐 {time_str}")
+
+        return "\n".join(lines)
+
+    def _escape_markdown(self, text: str) -> str:
+        """Échappe les caractères spéciaux Markdown.
+
+        Args:
+            text: Texte à échapper.
+
+        Returns:
+            Texte échappé.
+        """
+        special_chars = ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"]
+        for char in special_chars:
+            text = text.replace(char, f"\\{char}")
+        return text
+
+    def _should_send(self, alert: Alert) -> bool:
+        """Vérifie si l'alerte doit être envoyée.
+
+        Args:
+            alert: Alerte à vérifier.
+
+        Returns:
+            True si l'alerte doit être envoyée.
+        """
+        min_level = SEVERITY_ORDER.get(self._min_severity, 0)
+        alert_level = SEVERITY_ORDER.get(alert.severite, 0)
+        return alert_level >= min_level
+
+    async def send_alert(self, alert: Alert) -> bool:
+        """Envoie une alerte via Telegram.
+
+        Args:
+            alert: Alerte à envoyer.
+
+        Returns:
+            True si envoyé avec succès.
+        """
+        if not self._check_config():
+            return False
+
+        if not self._should_send(alert):
+            self._logger.debug(f"Alerte ignorée (sévérité {alert.severite})")
+            return False
+
+        try:
+            bot = await self._get_bot()
+            message = self._format_alert(alert)
+
+            await bot.send_message(
+                chat_id=self._chat_id,
+                text=message,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+
+            self._logger.info(f"Alerte envoyée: {alert.titre}")
+            return True
+
+        except Exception as e:
+            self._logger.error(f"Erreur envoi Telegram: {e}")
+            return False
+
+    async def send_alerts_batch(self, alerts: list[Alert]) -> tuple[int, int]:
+        """Envoie un lot d'alertes.
+
+        Args:
+            alerts: Liste des alertes.
+
+        Returns:
+            Tuple (envoyées, échouées).
+        """
+        if not self._check_config():
+            return (0, len(alerts))
+
+        sent = 0
+        failed = 0
+
+        for alert in alerts:
+            success = await self.send_alert(alert)
+            if success:
+                sent += 1
+            else:
+                failed += 1
+
+            # Rate limiting: max 30 messages/seconde pour Telegram
+            await asyncio.sleep(0.05)
+
+        self._logger.info(f"Lot envoyé: {sent} succès, {failed} échecs")
+        return (sent, failed)
+
+    async def send_digest(
+        self,
+        alerts: list[Alert],
+        title: str = "Résumé des alertes",
+    ) -> bool:
+        """Envoie un résumé groupé des alertes.
+
+        Args:
+            alerts: Liste des alertes.
+            title: Titre du digest.
+
+        Returns:
+            True si envoyé avec succès.
+        """
+        if not self._check_config():
+            return False
+
+        if not alerts:
+            return True
+
+        # Grouper par sévérité
+        by_severity = {"critique": [], "important": [], "attention": [], "info": []}
+        for alert in alerts:
+            if alert.severite in by_severity:
+                by_severity[alert.severite].append(alert)
+
+        # Construire le message
+        lines = [f"📊 *{title}*", ""]
+
+        for severity, severity_alerts in by_severity.items():
+            if not severity_alerts:
+                continue
+
+            emoji = SEVERITY_EMOJI.get(severity, "📌")
+            lines.append(f"{emoji} *{severity.upper()}* ({len(severity_alerts)})")
+
+            for alert in severity_alerts[:5]:  # Max 5 par catégorie
+                titre = self._escape_markdown(alert.titre[:50])
+                lines.append(f"  • {titre}")
+
+            if len(severity_alerts) > 5:
+                lines.append(f"  _... et {len(severity_alerts) - 5} autres_")
+
+            lines.append("")
+
+        # Total
+        lines.append(f"📈 Total: {len(alerts)} alertes")
+
+        try:
+            bot = await self._get_bot()
+            await bot.send_message(
+                chat_id=self._chat_id,
+                text="\n".join(lines),
+                parse_mode="Markdown",
+            )
+            return True
+
+        except Exception as e:
+            self._logger.error(f"Erreur envoi digest: {e}")
+            return False
+
+    async def send_test_message(self) -> bool:
+        """Envoie un message de test.
+
+        Returns:
+            True si envoyé avec succès.
+        """
+        if not self._check_config():
+            return False
+
+        try:
+            bot = await self._get_bot()
+            await bot.send_message(
+                chat_id=self._chat_id,
+                text="✅ *StratWatch* - Test de connexion réussi!",
+                parse_mode="Markdown",
+            )
+            self._logger.info("Message de test envoyé")
+            return True
+
+        except Exception as e:
+            self._logger.error(f"Erreur test Telegram: {e}")
+            return False

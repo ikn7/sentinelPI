@@ -1,0 +1,554 @@
+"""Collecteur d'annonces légales via BODACC.
+
+Le BODACC (Bulletin Officiel des Annonces Civiles et Commerciales) publie :
+- Immatriculations et radiations d'entreprises
+- Modifications (changement de dirigeant, capital, siège, etc.)
+- Procédures collectives (redressement, liquidation)
+- Ventes et cessions
+- Dépôts des comptes annuels
+
+Sources :
+- API DILA : https://api.gouv.fr/les-api/api-bodacc
+- Flux RSS : https://bodacc-datadila.opendatasoft.com/
+"""
+
+import hashlib
+import re
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any, Optional
+from xml.etree import ElementTree
+
+import feedparser
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.collectors.base import BaseCollector, CollectionResult
+from src.config import get_settings, load_competitors
+from src.storage.models import BodaccAnnouncement, Competitor, generate_uuid
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+# URLs des flux RSS BODACC
+BODACC_RSS_FEEDS = {
+    "A": "https://bodacc-datadila.opendatasoft.com/api/v2/catalog/datasets/annonces-commerciales/exports/rss",
+    "B": "https://bodacc-datadila.opendatasoft.com/api/v2/catalog/datasets/bodacc-b/exports/rss",
+    "C": "https://bodacc-datadila.opendatasoft.com/api/v2/catalog/datasets/bodacc-c/exports/rss",
+}
+
+# API BODACC (data.gouv.fr)
+BODACC_API_BASE = "https://bodacc-datadila.opendatasoft.com/api/v2/catalog/datasets"
+
+
+# Catégories d'annonces BODACC
+BODACC_CATEGORIES = {
+    # Créations
+    "immatriculation": "creation",
+    "création": "creation",
+
+    # Modifications
+    "modification": "modification",
+    "transfert": "modification",
+    "changement": "modification",
+    "transformation": "modification",
+    "augmentation de capital": "modification",
+    "réduction de capital": "modification",
+    "fusion": "modification",
+    "scission": "modification",
+
+    # Radiations
+    "radiation": "radiation",
+    "dissolution": "radiation",
+    "clôture": "radiation",
+
+    # Procédures collectives
+    "redressement judiciaire": "procedure_collective",
+    "liquidation judiciaire": "procedure_collective",
+    "sauvegarde": "procedure_collective",
+    "plan de continuation": "procedure_collective",
+    "plan de cession": "procedure_collective",
+    "jugement": "procedure_collective",
+
+    # Ventes
+    "vente": "vente",
+    "cession": "vente",
+    "apport": "vente",
+
+    # Dépôts
+    "dépôt des comptes": "depot_comptes",
+}
+
+
+@dataclass
+class BodaccEntry:
+    """Entrée BODACC parsée."""
+
+    numero_annonce: str
+    type_annonce: str
+    categorie: str
+    date_publication: date
+    siren: Optional[str]
+    denomination: Optional[str]
+    contenu: str
+    tribunal: Optional[str]
+    url: Optional[str]
+
+
+class BodaccCollector(BaseCollector[BodaccAnnouncement]):
+    """Collecteur d'annonces légales BODACC.
+
+    Surveille les annonces BODACC pour les entreprises suivies :
+    - Procédures collectives (redressement, liquidation)
+    - Modifications (capital, dirigeants, siège)
+    - Radiations et dissolutions
+
+    Example:
+        async with BodaccCollector() as collector:
+            announcements = await collector.collect_for_competitor("123456789")
+    """
+
+    name = "bodacc"
+    source_name = "default"
+
+    def __init__(self, session: Optional[AsyncSession] = None) -> None:
+        """Initialise le collecteur BODACC."""
+        super().__init__(session)
+        self._siren_pattern = re.compile(r'\b(\d{9})\b')
+
+    def _extract_siren(self, text: str) -> Optional[str]:
+        """Extrait un numéro SIREN du texte.
+
+        Args:
+            text: Texte contenant potentiellement un SIREN.
+
+        Returns:
+            SIREN trouvé ou None.
+        """
+        match = self._siren_pattern.search(text)
+        if match:
+            return match.group(1)
+        return None
+
+    def _categorize_announcement(self, type_annonce: str, contenu: str) -> str:
+        """Détermine la catégorie d'une annonce.
+
+        Args:
+            type_annonce: Type d'annonce BODACC.
+            contenu: Contenu de l'annonce.
+
+        Returns:
+            Catégorie normalisée.
+        """
+        text_lower = f"{type_annonce} {contenu}".lower()
+
+        for keyword, category in BODACC_CATEGORIES.items():
+            if keyword in text_lower:
+                return category
+
+        return "autre"
+
+    def _parse_date(self, date_str: Optional[str]) -> Optional[date]:
+        """Parse une date depuis différents formats.
+
+        Args:
+            date_str: Chaîne de date.
+
+        Returns:
+            Objet date ou None.
+        """
+        if not date_str:
+            return None
+
+        formats = [
+            "%Y-%m-%d",
+            "%d/%m/%Y",
+            "%Y-%m-%dT%H:%M:%S",
+            "%a, %d %b %Y %H:%M:%S %z",
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str.split("+")[0].strip(), fmt).date()
+            except ValueError:
+                continue
+
+        return None
+
+    def _generate_hash(self, entry: BodaccEntry) -> str:
+        """Génère un hash unique pour une annonce.
+
+        Args:
+            entry: Entrée BODACC.
+
+        Returns:
+            Hash MD5 de l'annonce.
+        """
+        content = f"{entry.numero_annonce}:{entry.siren}:{entry.date_publication}"
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def _parse_rss_entry(self, entry: dict[str, Any]) -> Optional[BodaccEntry]:
+        """Parse une entrée du flux RSS.
+
+        Args:
+            entry: Entrée feedparser.
+
+        Returns:
+            BodaccEntry ou None si parsing échoue.
+        """
+        try:
+            # Extraire le numéro d'annonce
+            numero = entry.get("id", "") or entry.get("guid", "")
+            if not numero:
+                numero = hashlib.md5(entry.get("title", "").encode()).hexdigest()[:12]
+
+            # Extraire le contenu
+            contenu = entry.get("summary", "") or entry.get("description", "")
+            titre = entry.get("title", "")
+
+            # Extraire le SIREN
+            siren = self._extract_siren(f"{titre} {contenu}")
+
+            # Extraire le type d'annonce
+            type_annonce = titre.split("-")[0].strip() if "-" in titre else titre
+
+            # Catégoriser
+            categorie = self._categorize_announcement(type_annonce, contenu)
+
+            # Parser la date
+            date_pub = self._parse_date(entry.get("published"))
+            if not date_pub:
+                date_pub = date.today()
+
+            # Extraire la dénomination
+            denomination = None
+            if ":" in titre:
+                parts = titre.split(":")
+                if len(parts) > 1:
+                    denomination = parts[1].strip()
+
+            return BodaccEntry(
+                numero_annonce=numero,
+                type_annonce=type_annonce,
+                categorie=categorie,
+                date_publication=date_pub,
+                siren=siren,
+                denomination=denomination,
+                contenu=contenu,
+                tribunal=entry.get("author"),
+                url=entry.get("link"),
+            )
+
+        except Exception as e:
+            self._logger.warning(f"Erreur parsing entrée RSS: {e}")
+            return None
+
+    async def _fetch_rss_feed(self, feed_type: str = "A") -> list[BodaccEntry]:
+        """Récupère les annonces depuis un flux RSS.
+
+        Args:
+            feed_type: Type de flux (A, B, C).
+
+        Returns:
+            Liste des entrées BODACC.
+        """
+        url = BODACC_RSS_FEEDS.get(feed_type)
+        if not url:
+            self._logger.error(f"Type de flux inconnu: {feed_type}")
+            return []
+
+        try:
+            response = await self.client.get_text(url, use_cache=False)
+            feed = feedparser.parse(response)
+
+            entries = []
+            for item in feed.entries:
+                entry = self._parse_rss_entry(item)
+                if entry:
+                    entries.append(entry)
+
+            self._logger.info(f"Flux BODACC {feed_type}: {len(entries)} annonces")
+            return entries
+
+        except Exception as e:
+            self._logger.error(f"Erreur récupération flux RSS {feed_type}: {e}")
+            return []
+
+    async def _search_by_siren(self, siren: str) -> list[BodaccEntry]:
+        """Recherche les annonces pour un SIREN via l'API.
+
+        Args:
+            siren: Numéro SIREN.
+
+        Returns:
+            Liste des annonces trouvées.
+        """
+        # Utiliser l'API OpenDataSoft
+        url = f"{BODACC_API_BASE}/annonces-commerciales/records"
+        params = {
+            "where": f"registre like '*{siren}*'",
+            "limit": 100,
+            "order_by": "dateparution desc",
+        }
+
+        try:
+            data = await self.client.get_json(url, params=params)
+            entries = []
+
+            for record in data.get("records", []):
+                fields = record.get("fields", {})
+
+                entry = BodaccEntry(
+                    numero_annonce=fields.get("id", record.get("id", "")),
+                    type_annonce=fields.get("typeavis", ""),
+                    categorie=self._categorize_announcement(
+                        fields.get("typeavis", ""),
+                        fields.get("contenu", "")
+                    ),
+                    date_publication=self._parse_date(fields.get("dateparution")),
+                    siren=siren,
+                    denomination=fields.get("denomination"),
+                    contenu=fields.get("contenu", ""),
+                    tribunal=fields.get("tribunal"),
+                    url=fields.get("url"),
+                )
+                entries.append(entry)
+
+            return entries
+
+        except Exception as e:
+            self._logger.error(f"Erreur recherche SIREN {siren}: {e}")
+            return []
+
+    async def collect(self, **kwargs: Any) -> list[BodaccAnnouncement]:
+        """Collecte les annonces BODACC récentes.
+
+        Parcourt les flux RSS et filtre les annonces concernant
+        les entreprises surveillées.
+
+        Returns:
+            Liste des annonces BODACC.
+        """
+        # Charger les SIRENs surveillés
+        competitors_config = load_competitors()
+        watched_sirens = {c.siren for c in competitors_config.competitors}
+
+        if not watched_sirens:
+            self._logger.warning("Aucun concurrent configuré pour la surveillance BODACC")
+            return []
+
+        self.log_collection_start(f"{len(watched_sirens)} entreprises")
+
+        all_entries: list[BodaccEntry] = []
+
+        # Parcourir les flux RSS
+        for feed_type in BODACC_RSS_FEEDS.keys():
+            entries = await self._fetch_rss_feed(feed_type)
+            all_entries.extend(entries)
+
+        # Filtrer les annonces pertinentes
+        relevant_entries = [
+            entry for entry in all_entries
+            if entry.siren and entry.siren in watched_sirens
+        ]
+
+        # Convertir en modèles
+        announcements = []
+        for entry in relevant_entries:
+            announcement = BodaccAnnouncement(
+                id=generate_uuid(),
+                competitor_id="",  # Sera rempli lors de la sauvegarde
+                numero_annonce=entry.numero_annonce,
+                type_annonce=entry.type_annonce,
+                categorie=entry.categorie,
+                date_publication=entry.date_publication,
+                contenu=entry.contenu,
+                tribunal=entry.tribunal,
+                url=entry.url,
+            )
+            announcements.append(announcement)
+
+        self.log_collection_end("BODACC", len(announcements))
+        return announcements
+
+    async def collect_for_competitor(
+        self,
+        siren: str,
+        **kwargs: Any,
+    ) -> list[BodaccAnnouncement]:
+        """Collecte les annonces pour un concurrent spécifique.
+
+        Args:
+            siren: Numéro SIREN.
+
+        Returns:
+            Liste des annonces BODACC.
+        """
+        self._logger.debug(f"Collecte BODACC pour SIREN {siren}")
+
+        entries = await self._search_by_siren(siren)
+
+        announcements = []
+        for entry in entries:
+            announcement = BodaccAnnouncement(
+                id=generate_uuid(),
+                competitor_id="",
+                numero_annonce=entry.numero_annonce,
+                type_annonce=entry.type_annonce,
+                categorie=entry.categorie,
+                date_publication=entry.date_publication or date.today(),
+                contenu=entry.contenu,
+                tribunal=entry.tribunal,
+                url=entry.url,
+            )
+            announcements.append(announcement)
+
+        return announcements
+
+    async def collect_and_save(
+        self,
+        session: AsyncSession,
+        siren: Optional[str] = None,
+    ) -> CollectionResult:
+        """Collecte et sauvegarde les annonces BODACC.
+
+        Args:
+            session: Session SQLAlchemy.
+            siren: SIREN spécifique (optionnel).
+
+        Returns:
+            Résultat de la collecte.
+        """
+        started_at = datetime.now()
+        errors = []
+        items_collected = 0
+        items_saved = 0
+
+        try:
+            if siren:
+                # Collecter pour un SIREN spécifique
+                result = await session.execute(
+                    select(Competitor).where(Competitor.siren == siren)
+                )
+                competitor = result.scalar_one_or_none()
+
+                if not competitor:
+                    return CollectionResult(
+                        collector_name=self.name,
+                        target=siren,
+                        success=False,
+                        errors=["Concurrent non trouvé en base"],
+                        started_at=started_at,
+                        finished_at=datetime.now(),
+                    )
+
+                entries = await self._search_by_siren(siren)
+                items_collected = len(entries)
+
+                for entry in entries:
+                    # Vérifier si l'annonce existe déjà
+                    existing = await session.execute(
+                        select(BodaccAnnouncement).where(
+                            BodaccAnnouncement.numero_annonce == entry.numero_annonce
+                        )
+                    )
+                    if existing.scalar_one_or_none():
+                        continue
+
+                    announcement = BodaccAnnouncement(
+                        id=generate_uuid(),
+                        competitor_id=competitor.id,
+                        numero_annonce=entry.numero_annonce,
+                        type_annonce=entry.type_annonce,
+                        categorie=entry.categorie,
+                        date_publication=entry.date_publication or date.today(),
+                        contenu=entry.contenu,
+                        tribunal=entry.tribunal,
+                        url=entry.url,
+                    )
+                    session.add(announcement)
+                    items_saved += 1
+
+                    # Générer une alerte si procédure collective
+                    if entry.categorie == "procedure_collective":
+                        self._logger.warning(
+                            f"ALERTE: Procédure collective détectée pour {competitor.nom}"
+                        )
+
+            else:
+                # Collecter pour tous les concurrents
+                result = await session.execute(
+                    select(Competitor).where(Competitor.actif == True)
+                )
+                competitors = {c.siren: c for c in result.scalars().all()}
+
+                if not competitors:
+                    return CollectionResult(
+                        collector_name=self.name,
+                        target="all",
+                        success=True,
+                        items_collected=0,
+                        started_at=started_at,
+                        finished_at=datetime.now(),
+                    )
+
+                # Parcourir les flux RSS
+                for feed_type in BODACC_RSS_FEEDS.keys():
+                    entries = await self._fetch_rss_feed(feed_type)
+
+                    for entry in entries:
+                        items_collected += 1
+
+                        if not entry.siren or entry.siren not in competitors:
+                            continue
+
+                        competitor = competitors[entry.siren]
+
+                        # Vérifier si l'annonce existe
+                        existing = await session.execute(
+                            select(BodaccAnnouncement).where(
+                                BodaccAnnouncement.numero_annonce == entry.numero_annonce
+                            )
+                        )
+                        if existing.scalar_one_or_none():
+                            continue
+
+                        announcement = BodaccAnnouncement(
+                            id=generate_uuid(),
+                            competitor_id=competitor.id,
+                            numero_annonce=entry.numero_annonce,
+                            type_annonce=entry.type_annonce,
+                            categorie=entry.categorie,
+                            date_publication=entry.date_publication or date.today(),
+                            contenu=entry.contenu,
+                            tribunal=entry.tribunal,
+                            url=entry.url,
+                        )
+                        session.add(announcement)
+                        items_saved += 1
+
+            await session.commit()
+
+            return CollectionResult(
+                collector_name=self.name,
+                target=siren or "all",
+                success=True,
+                items_collected=items_collected,
+                items_saved=items_saved,
+                started_at=started_at,
+                finished_at=datetime.now(),
+            )
+
+        except Exception as e:
+            self._logger.error(f"Erreur collecte BODACC: {e}")
+            await session.rollback()
+            return CollectionResult(
+                collector_name=self.name,
+                target=siren or "all",
+                success=False,
+                items_collected=items_collected,
+                errors=[str(e)],
+                started_at=started_at,
+                finished_at=datetime.now(),
+            )

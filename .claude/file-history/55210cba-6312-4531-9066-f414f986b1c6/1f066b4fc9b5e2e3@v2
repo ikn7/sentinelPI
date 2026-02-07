@@ -1,0 +1,377 @@
+"""Client HTTP avec rate limiting et retry automatique."""
+
+import asyncio
+import hashlib
+import time
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+import httpx
+from tenacity import (
+    RetryError,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from src.config import get_settings
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class RateLimiter:
+    """Gestionnaire de rate limiting par source.
+
+    Implémente un token bucket algorithm pour limiter les requêtes.
+    """
+
+    requests_per_minute: int
+    _tokens: float = field(init=False)
+    _last_update: float = field(init=False)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def __post_init__(self) -> None:
+        self._tokens = float(self.requests_per_minute)
+        self._last_update = time.monotonic()
+
+    async def acquire(self) -> None:
+        """Attend si nécessaire pour respecter le rate limit."""
+        async with self._lock:
+            now = time.monotonic()
+            time_passed = now - self._last_update
+            self._tokens = min(
+                self.requests_per_minute,
+                self._tokens + time_passed * (self.requests_per_minute / 60.0)
+            )
+            self._last_update = now
+
+            if self._tokens < 1:
+                wait_time = (1 - self._tokens) * (60.0 / self.requests_per_minute)
+                logger.debug(f"Rate limit atteint, attente de {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+                self._tokens = 1
+
+            self._tokens -= 1
+
+
+@dataclass
+class CacheEntry:
+    """Entrée de cache avec TTL."""
+
+    data: Any
+    expires_at: float
+
+
+class HTTPClient:
+    """Client HTTP async avec rate limiting, retry et cache.
+
+    Features:
+    - Rate limiting configurable par source
+    - Retry automatique avec backoff exponentiel
+    - Cache des réponses avec TTL
+    - Gestion des erreurs HTTP
+    - Headers personnalisables
+    """
+
+    def __init__(
+        self,
+        source_name: str = "default",
+        timeout: float = 30.0,
+        cache_ttl: int = 300,  # 5 minutes par défaut
+        user_agent: Optional[str] = None,
+    ) -> None:
+        """Initialise le client HTTP.
+
+        Args:
+            source_name: Nom de la source pour le rate limiting.
+            timeout: Timeout des requêtes en secondes.
+            cache_ttl: Durée de vie du cache en secondes.
+            user_agent: User-Agent personnalisé.
+        """
+        self.source_name = source_name
+        self.timeout = timeout
+        self.cache_ttl = cache_ttl
+
+        settings = get_settings()
+
+        # Configuration du rate limiter
+        rate_limit = getattr(
+            settings.collection.rate_limits,
+            source_name,
+            settings.collection.rate_limits.default
+        )
+        self._rate_limiter = RateLimiter(requests_per_minute=rate_limit)
+
+        # Configuration retry
+        self._max_attempts = settings.collection.retry.max_attempts
+        self._base_delay = settings.collection.retry.base_delay
+        self._max_delay = settings.collection.retry.max_delay
+
+        # Client HTTPX
+        self._client: Optional[httpx.AsyncClient] = None
+        self._user_agent = user_agent or f"StratWatch/{settings.app.version}"
+
+        # Cache
+        self._cache: dict[str, CacheEntry] = {}
+
+    async def __aenter__(self) -> "HTTPClient":
+        """Entre dans le contexte async."""
+        await self._ensure_client()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Sort du contexte async."""
+        await self.close()
+
+    async def _ensure_client(self) -> None:
+        """Crée le client HTTPX si nécessaire."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout),
+                headers={"User-Agent": self._user_agent},
+                follow_redirects=True,
+            )
+
+    async def close(self) -> None:
+        """Ferme le client HTTP."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    def _cache_key(self, method: str, url: str, **kwargs: Any) -> str:
+        """Génère une clé de cache unique."""
+        key_data = f"{method}:{url}:{kwargs}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+
+    def _get_cached(self, key: str) -> Optional[Any]:
+        """Récupère une valeur du cache si non expirée."""
+        if key in self._cache:
+            entry = self._cache[key]
+            if time.time() < entry.expires_at:
+                logger.debug(f"Cache hit pour {key[:8]}...")
+                return entry.data
+            else:
+                del self._cache[key]
+        return None
+
+    def _set_cached(self, key: str, data: Any) -> None:
+        """Stocke une valeur dans le cache."""
+        self._cache[key] = CacheEntry(
+            data=data,
+            expires_at=time.time() + self.cache_ttl
+        )
+
+    def _clean_cache(self) -> None:
+        """Nettoie les entrées expirées du cache."""
+        now = time.time()
+        expired_keys = [
+            key for key, entry in self._cache.items()
+            if entry.expires_at < now
+        ]
+        for key in expired_keys:
+            del self._cache[key]
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        use_cache: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Effectue une requête HTTP avec retry et rate limiting.
+
+        Args:
+            method: Méthode HTTP (GET, POST, etc.).
+            url: URL de la requête.
+            use_cache: Utiliser le cache pour les GET.
+            **kwargs: Arguments supplémentaires pour httpx.
+
+        Returns:
+            Réponse HTTP.
+
+        Raises:
+            httpx.HTTPStatusError: Erreur HTTP 4xx/5xx.
+            httpx.RequestError: Erreur de connexion.
+        """
+        await self._ensure_client()
+
+        # Vérifier le cache pour les GET
+        cache_key = None
+        if method.upper() == "GET" and use_cache:
+            cache_key = self._cache_key(method, url, **kwargs)
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                return cached
+
+        # Appliquer le rate limiting
+        await self._rate_limiter.acquire()
+
+        # Effectuer la requête avec retry
+        @retry(
+            retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError)),
+            stop=stop_after_attempt(self._max_attempts),
+            wait=wait_exponential(
+                multiplier=self._base_delay,
+                max=self._max_delay
+            ),
+            reraise=True,
+        )
+        async def _do_request() -> httpx.Response:
+            logger.debug(f"{method.upper()} {url}")
+            response = await self._client.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response
+
+        try:
+            response = await _do_request()
+
+            # Mettre en cache si applicable
+            if cache_key is not None:
+                self._set_cached(cache_key, response)
+
+            return response
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Erreur HTTP {e.response.status_code} pour {url}")
+            raise
+        except RetryError as e:
+            logger.error(f"Échec après {self._max_attempts} tentatives pour {url}")
+            raise
+        except Exception as e:
+            logger.error(f"Erreur inattendue pour {url}: {e}")
+            raise
+
+    async def get(
+        self,
+        url: str,
+        params: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
+        use_cache: bool = True,
+    ) -> httpx.Response:
+        """Effectue une requête GET.
+
+        Args:
+            url: URL de la requête.
+            params: Paramètres de requête.
+            headers: Headers supplémentaires.
+            use_cache: Utiliser le cache.
+
+        Returns:
+            Réponse HTTP.
+        """
+        return await self._request(
+            "GET",
+            url,
+            params=params,
+            headers=headers,
+            use_cache=use_cache,
+        )
+
+    async def post(
+        self,
+        url: str,
+        data: Optional[dict[str, Any]] = None,
+        json: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> httpx.Response:
+        """Effectue une requête POST.
+
+        Args:
+            url: URL de la requête.
+            data: Données de formulaire.
+            json: Données JSON.
+            headers: Headers supplémentaires.
+
+        Returns:
+            Réponse HTTP.
+        """
+        return await self._request(
+            "POST",
+            url,
+            data=data,
+            json=json,
+            headers=headers,
+            use_cache=False,
+        )
+
+    async def get_json(
+        self,
+        url: str,
+        params: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
+        use_cache: bool = True,
+    ) -> Any:
+        """Effectue une requête GET et parse le JSON.
+
+        Args:
+            url: URL de la requête.
+            params: Paramètres de requête.
+            headers: Headers supplémentaires.
+            use_cache: Utiliser le cache.
+
+        Returns:
+            Données JSON parsées.
+        """
+        response = await self.get(url, params=params, headers=headers, use_cache=use_cache)
+        return response.json()
+
+    async def get_text(
+        self,
+        url: str,
+        params: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
+        use_cache: bool = True,
+    ) -> str:
+        """Effectue une requête GET et retourne le texte.
+
+        Args:
+            url: URL de la requête.
+            params: Paramètres de requête.
+            headers: Headers supplémentaires.
+            use_cache: Utiliser le cache.
+
+        Returns:
+            Texte de la réponse.
+        """
+        response = await self.get(url, params=params, headers=headers, use_cache=use_cache)
+        return response.text
+
+
+class HTTPClientPool:
+    """Pool de clients HTTP par source.
+
+    Permet de gérer plusieurs clients avec des configurations
+    différentes selon la source de données.
+    """
+
+    _clients: dict[str, HTTPClient] = {}
+
+    @classmethod
+    def get_client(
+        cls,
+        source_name: str = "default",
+        **kwargs: Any,
+    ) -> HTTPClient:
+        """Récupère ou crée un client pour une source.
+
+        Args:
+            source_name: Nom de la source.
+            **kwargs: Arguments pour HTTPClient.
+
+        Returns:
+            Client HTTP configuré.
+        """
+        if source_name not in cls._clients:
+            cls._clients[source_name] = HTTPClient(source_name=source_name, **kwargs)
+        return cls._clients[source_name]
+
+    @classmethod
+    async def close_all(cls) -> None:
+        """Ferme tous les clients du pool."""
+        for client in cls._clients.values():
+            await client.close()
+        cls._clients.clear()

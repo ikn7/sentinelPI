@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "sessionId": "55210cba-6312-4531-9066-f414f986b1c6",
+      "fullPath": "/home/user/.claude/projects/-home-user/55210cba-6312-4531-9066-f414f986b1c6.jsonl",
+      "fileMtime": 1770232035852,
+      "firstPrompt": "je n'y accpas depuis une autre machine du même lan",
+      "summary": "Dashboard LAN access firewall port issue resolved",
+      "messageCount": 7,
+      "created": "2026-02-02T20:28:46.216Z",
+      "modified": "2026-02-02T20:42:39.671Z",
+      "gitBranch": "",
+      "projectPath": "/home/user/stratwatch",
+      "isSidechain": false
+    }
+  ],
+  "originalPath": "/home/user"
+}

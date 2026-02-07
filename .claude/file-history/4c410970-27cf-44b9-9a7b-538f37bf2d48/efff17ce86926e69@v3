@@ -1,0 +1,47 @@
+[Unit]
+Description=SentinelPi Dashboard - Interface web
+Documentation=https://github.com/sentinelpi/sentinelpi
+After=network-online.target sentinelpi.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=sentinelpi
+Group=sentinelpi
+
+# Répertoires
+WorkingDirectory=/opt/sentinelpi
+Environment="PATH=/opt/sentinelpi/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="HOME=/opt/sentinelpi"
+Environment="STREAMLIT_SERVER_HEADLESS=true"
+Environment="STREAMLIT_BROWSER_GATHER_USAGE_STATS=false"
+
+# Commande Streamlit
+ExecStart=/opt/sentinelpi/venv/bin/streamlit run src/dashboard/app.py \
+    --server.port=8501 \
+    --server.address=0.0.0.0 \
+    --server.headless=true \
+    --browser.gatherUsageStats=false \
+    --theme.base=light
+
+# Redémarrage automatique
+Restart=on-failure
+RestartSec=10
+
+# Sécurité
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/sentinelpi /var/log/sentinelpi /etc/sentinelpi /opt/sentinelpi
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinelpi-dashboard
+
+[Install]
+WantedBy=multi-user.target
